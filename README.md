@@ -54,6 +54,15 @@
 | 十几个互动工具 | `qq_send` / `qq_reply` / `qq_send_image` / `qq_send_file` / `qq_mface` / `qq_face` / `qq_faces` / `qq_keep_face` / `qq_poke` / `qq_react` / `qq_like` / `qq_recall` / `qq_images` / `qq_group_history` / `qq_glossary` / `qq_facts` / `qq_pin` / `qq_meme` |
 | 问答能转回 QQ | `ask_user_question` 抛的问题会变成一条 QQ 消息，回个数字就行 |
 
+> 🧠 **推荐搭配 [dsh-context-ctl](https://github.com/Mrapple051108/DSH-Context-Control)**
+>
+> QQ 会话是最典型的长期会话——一个群能连着聊几个月，历史长得飞快，于是**每一轮都在为几个月前的寒暄付费**。
+> 那个插件按会话把模型视野（surface）里的旧历史换成一句替身，只留最近几条原文：**不调 LLM、不动会话日志、不改 web 记录**，
+> 被裁的原消息一条不少，记忆库里照样查得到。群聊和私聊可以分别开，默认全关，一个会话一个开关。
+>
+> 它和本插件自带的 `contextGuard` **不抢地盘**：`contextGuard` 管的是「再长就装不下」的急救（写记忆 → 换新会话 → 用便签接上），
+> dsh-context-ctl 管的是「日常太长了，把旧的裁掉」。一个急救，一个节流，可以同时开。
+
 ---
 
 ## 界面一览
@@ -431,6 +440,7 @@ dsh plugin --profile desktop why dsh-qbot
 | 长期跑、看门狗、定时写日记、开机自启 | [docs/deployment.md](docs/deployment.md) |
 | 改代码、跑测试、目录结构 | [docs/development.md](docs/development.md) |
 | 测试怎么做、踩坑记录、排障 | [TESTING.md](TESTING.md) · [tools/README.md](tools/README.md) |
+| **省 token、管住会话长度** | [dsh-context-ctl](https://github.com/Mrapple051108/DSH-Context-Control) —— 按会话裁剪模型视野里的旧历史，不调 LLM、不丢日志 |
 
 ## 在 DSH 设置里调它
 
