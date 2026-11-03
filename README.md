@@ -63,6 +63,16 @@
 > 它和本插件自带的 `contextGuard` **不抢地盘**：`contextGuard` 管的是「再长就装不下」的急救（写记忆 → 换新会话 → 用便签接上），
 > dsh-context-ctl 管的是「日常太长了，把旧的裁掉」。一个急救，一个节流，可以同时开。
 
+> 🧠 **再配一个 [fast-ivf-rag](https://github.com/Mrapple051108/DSH-Fast-IVF-RAG)，把记忆真正存下来**
+>
+> 上面那个负责**裁**，这个负责**裁掉之后还记得**。群聊连着聊几个月，历史必然长到要裁；但被裁掉的东西不该真忘——
+> 它们会变成一条条几十字的记忆节点存进本地向量库（IVF 聚类 + BM25 混合检索），需要时按语义捞回来。
+>
+> **热路径 6~8 ms**，快到能当工具用：`rag_search` 和 `read` 摆在一起，模型想翻旧账随时调，不会卡住回复；
+> 平时每轮还会自动召回一次，命中几条就以几十字的长度注入上下文。
+>
+> 三个东西的分工：**dsh-qbot 负责说话，dsh-context-ctl 负责裁短，fast-ivf-rag 负责不忘记。**
+
 ---
 
 ## 界面一览
@@ -352,10 +362,10 @@ query ──embed──> 余弦比一遍所有收藏
 **先把 DSH 完全退出**（托盘也要退掉，插件文件被占用会装到一半失败）。
 
 ```powershell
-# 装本地包
-dsh plugin --profile desktop add "D:\dist\dsh-qbot-1.3.2-20261103.zip"
+# 从 Release 下 dsh-qbot-1.3.2.zip 之后
+dsh plugin --profile desktop add "D:\下载\dsh-qbot-1.3.2.zip"
 
-# 或直接装源码目录（目录名要跟包名一致）
+# 或者装源码目录（目录名要跟包名一致）
 dsh plugin --profile desktop add "D:\dsh-chat\dsh-qbot"
 ```
 
@@ -441,6 +451,7 @@ dsh plugin --profile desktop why dsh-qbot
 | 改代码、跑测试、目录结构 | [docs/development.md](docs/development.md) |
 | 测试怎么做、踩坑记录、排障 | [TESTING.md](TESTING.md) · [tools/README.md](tools/README.md) |
 | **省 token、管住会话长度** | [dsh-context-ctl](https://github.com/Mrapple051108/DSH-Context-Control) —— 按会话裁剪模型视野里的旧历史，不调 LLM、不丢日志 |
+| **让它记得住几个月前的事** | [fast-ivf-rag](https://github.com/Mrapple051108/DSH-Fast-IVF-RAG) —— 本地向量记忆库，IVF + BM25 混合检索，自动召回 + 工具调用 |
 
 ## 在 DSH 设置里调它
 
