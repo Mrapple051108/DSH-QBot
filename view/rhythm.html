@@ -1,0 +1,1498 @@
+<!doctype html>
+<html lang="zh-CN">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>群聊状态 · 热窗 / 冷窗 / 烦躁度</title>
+		<style>
+			:root {
+				--bg: #0e1116;
+				--panel: #161b22;
+				--line: #263041;
+				--fg: #d7dee8;
+				--dim: #8b98a9;
+				--acc: #5b9dff;
+				--acc2: #7ee0c0;
+				--warn: #ff7b72;
+			}
+			* { box-sizing: border-box; }
+			body {
+				margin: 0;
+				background: var(--bg);
+				color: var(--fg);
+				font: 13px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+			}
+			header {
+				display: flex;
+				gap: 12px;
+				align-items: center;
+				flex-wrap: wrap;
+				padding: 12px 18px;
+				border-bottom: 1px solid var(--line);
+				background: linear-gradient(180deg, #131922, #0e1116);
+				position: sticky;
+				top: 0;
+				z-index: 5;
+			}
+			header b { font-size: 15px; letter-spacing: 0.3px; }
+			select,
+			button {
+				background: #0f141c;
+				border: 1px solid var(--line);
+				color: var(--fg);
+				border-radius: 7px;
+				padding: 5px 9px;
+				font: inherit;
+				outline: none;
+			}
+			select { max-width: 420px; }
+			button { cursor: pointer; background: #1d2531; }
+			button:hover { border-color: var(--acc); }
+			label { color: var(--dim); font-size: 12px; display: inline-flex; gap: 5px; align-items: center; cursor: pointer; }
+			#stat { color: var(--dim); font-size: 12px; margin-left: auto; }
+			main { padding: 16px 18px 40px; max-width: 1280px; }
+			.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+			#chart { width: 100%; height: auto; display: block; background: #0b0f15; border-radius: 8px; }
+			.legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; color: var(--dim); font-size: 12px; }
+			.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: middle; }
+			.muted { color: var(--dim); }
+			.err { color: var(--warn); }
+			.tip { margin-top: 12px; color: var(--dim); font-size: 12px; line-height: 1.7; }
+			.tip code { color: var(--acc2); font-family: Consolas, monospace; }
+			/* 状态卡片：相位 / 烦躁度 / 本档时长 / 倒计时 */
+			.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+			.st { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+			.st .k { color: var(--dim); font-size: 11px; letter-spacing: 0.3px; }
+			.st .v { font-size: 19px; font-weight: 600; margin-top: 3px; font-variant-numeric: tabular-nums; }
+			.st .s { color: var(--dim); font-size: 11px; margin-top: 2px; }
+			.st.hot { border-color: #2f5c4f; }
+			.st.cold { border-color: #2a4a72; }
+			.st.ignore { border-color: #6b2f2f; }
+			.st.hot .v { color: var(--acc2); }
+			.st.cold .v { color: var(--acc); }
+			.st.ignore .v { color: var(--warn); }
+			.v-bar { height: 6px; background: #0f141c; border-radius: 99px; overflow: hidden; margin-top: 8px; }
+			.v-bar > i { display: block; height: 100%; background: var(--acc2); transition: width 0.3s ease; }
+			.v-bar > i.hi { background: var(--warn); }
+
+			/* ── tab 切换（2026-11-02 加群聊设置）── */
+			.tab { background: transparent; border: 1px solid transparent; color: var(--dim); padding: 5px 12px; }
+			.tab.on { background: #1d2531; border-color: var(--acc); color: var(--fg); }
+			section[hidden] { display: none; }
+
+			/* ── 设置页 ── */
+			.set-head { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 12px; }
+			.set-body { display: flex; flex-direction: column; gap: 14px; }
+			.sec { border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; background: #12171f; }
+			.sec-name { font-size: 12px; color: var(--acc2); letter-spacing: 0.4px; margin-bottom: 6px; }
+			.row { display: grid; grid-template-columns: 92px 150px 1fr 52px; gap: 8px; align-items: center; padding: 5px 0; }
+			.row + .row { border-top: 1px dashed #1e2530; }
+			.row .k { color: var(--dim); font-size: 12px; }
+			.row .hint { color: #6b7787; font-size: 11px; grid-column: 1 / -1; margin-top: -4px; }
+			.row .unit { color: var(--dim); font-size: 12px; }
+			.row input[type="number"],
+			.row input[type="text"],
+			.row select,
+			.row textarea {
+				width: 100%;
+				background: #0f141c;
+				border: 1px solid var(--line);
+				color: var(--fg);
+				border-radius: 6px;
+				padding: 4px 7px;
+				font: inherit;
+				outline: none;
+			}
+			.row textarea { resize: vertical; }
+			.row input:disabled,
+			.row select:disabled,
+			.row textarea:disabled { opacity: 0.45; cursor: not-allowed; }
+			.row .follow { font-size: 11px; }
+			.ok { color: var(--acc2); }
+			.bad { color: var(--warn); }
+			.set-foot { margin-top: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+			/* 表情包收藏（2026-11-03）：四列网格，点开看大图 + 改描述 */
+			.face-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+			.face-tile { position: relative; aspect-ratio: 1 / 1; border: 1px solid var(--line); border-radius: 10px; background: #0f141b; overflow: hidden; display: flex; align-items: center; justify-content: center; cursor: zoom-in; font-size: 11px; color: var(--dim); text-align: center; line-height: 1.3; }
+			.face-tile img { width: 100%; height: 100%; object-fit: contain; }
+			.face-tile:hover { border-color: var(--acc2); }
+			.face-badge { position: absolute; bottom: 4px; left: 4px; font-size: 10px; padding: 1px 5px; border-radius: 5px; background: rgba(0, 0, 0, 0.62); color: var(--dim); font-style: normal; }
+			.face-badge.miss { left: auto; right: 4px; color: var(--warn); }
+			.face-meta { font-size: 11px; color: var(--dim); }
+
+			#face-modal { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.62); display: flex; align-items: center; justify-content: center; z-index: 50; }
+			#face-modal[hidden] { display: none; }
+			.modal-card { width: min(560px, 92vw); background: #141a23; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+			.modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+			.modal-body { display: grid; grid-template-columns: 180px 1fr; gap: 12px; align-items: start; }
+			.face-preview { width: 180px; height: 180px; border: 1px solid var(--line); border-radius: 10px; background: #0f141b; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+			.face-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
+			.face-edit { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+			.face-edit input { padding: 7px 9px; border-radius: 7px; border: 1px solid var(--line); background: #0f141b; color: var(--fg); font-size: 13px; }
+			.modal-foot { margin-top: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+		</style>
+	</head>
+	<body>
+		<header>
+			<b>群聊</b>
+			<button class="tab on" id="tab-status">状态</button>
+			<button class="tab" id="tab-settings">设置</button>
+			<select id="sel"></select>
+			<button id="refresh">刷新</button>
+			<label id="auto-wrap"><input type="checkbox" id="auto" checked /> 每 5 秒自动刷新</label>
+			<span id="stat"></span>
+		</header>
+		<main>
+			<section id="view-status">
+			<div class="card" id="state-card">
+				<div class="stat-grid" id="stats"></div>
+			</div>
+			<div class="card">
+				<svg id="chart" viewBox="0 0 1000 420" preserveAspectRatio="xMidYMid meet"></svg>
+				<div class="legend">
+					<span><i style="background: #7ee0c0"></i>热窗</span>
+					<span><i style="background: #5b9dff"></i>冷窗</span>
+					<span><i style="background: #ff7b72"></i>无视冷窗</span>
+					<span style="color: #7ee0c0">━ 低于阈值</span>
+					<span style="color: #ff7b72">━ 高过阈值</span>
+					<span style="color: #ff7b72">╍ 进入阈值</span>
+					<span style="color: #8b98a9">╍ 退出阈值</span>
+				</div>
+			</div>
+			<div class="tip">
+				上面的卡片是<b>实时状态</b>：当前哪一档、本档抽到的时长（跟设置里的区间一起看）、还有多久换档、烦躁度多少。<br />
+				倒计时每秒走，数据 5 秒刷一次；「攒着」是冷窗里压着没投的消息数，切到热窗会一次性交出去。<br />
+				<br />
+				烦躁度<b>一直在算</b>，跟「按烦躁度自动开无视」那个开关无关 —— 关掉只是不会自己进无视，曲线照记。<br />
+				曲线每 15 秒落一个点，状态切换时额外补一个；内存里保留最近约 12 小时，宿主重启会清空。<br />
+				红线是 <code>ignoreEscapeThreshold</code>（逃离阈值），橙线是 <code>ignoreAngerThreshold</code>（愤怒阈值），灰点线是 <code>ignoreCalmThreshold</code>（冷静阈值）。
+			</div>
+			</section>
+
+			<section id="view-settings" hidden>
+				<div class="card">
+					<div class="set-head">
+						<b>这个群单独的设置</b>
+						<span class="muted">每一项都可以「跟随全局」；取消勾选后才改得动，改完立刻生效，不用重启。</span>
+					</div>
+					<div id="set-body" class="set-body"><div class="muted">加载中…</div></div>
+					<div class="set-foot">
+						<button id="set-reset-all">全部恢复跟随全局</button>
+						<span id="set-msg" class="muted"></span>
+					</div>
+				</div>
+
+				<div class="card" id="rsa-card">
+					<div class="set-head">
+						<b>RSA 命令通道</b>
+						<span class="muted">
+							上面「允许 RSA 密钥命令」打开之后，明文 <code>/reset</code> 之类全部失效，
+							只认 <code>#ENC:&lt;base64&gt;</code>。加密在本地做，私钥不出这台机器。
+						</span>
+					</div>
+					<div id="rsa-body" class="set-body"><div class="muted">加载中…</div></div>
+				</div>
+
+				<div class="card" id="emb-card">
+					<div class="set-head">
+						<b>表情包语义检索（全局）</b>
+						<span class="muted">
+							<b>这一块是全局设置</b>，所有群共用同一份收藏和同一套开关 ——
+							上面那些「跟随全局」对它不适用，改了就是全部生效。<br />
+							借记忆库插件（fast-ivf-rag）的嵌入服务，把「图的名字 + 标签」变成向量。
+							按意思找图，不用记名字；服务不可用就自动退回关键词匹配。
+						</span>
+					</div>
+					<div id="emb-body" class="set-body"><div class="muted">加载中…</div></div>
+				</div>
+
+				<div class="card" id="faces-card">
+					<div class="set-head">
+						<b>表情包收藏（全局）</b>
+						<span class="muted">
+							所有群和私聊共用这一份 —— 表情包没有按群的概念。<br />
+							改描述会重算它的语义向量，下次按意思挑图就照新描述找；描述空着的图，语义检索挑不到。<br />
+							删除会连本地图片一起删掉；商城表情只删这份登记，不影响 QQ 里的表情。
+						</span>
+					</div>
+					<div id="faces-body" class="set-body"><div class="muted">加载中…</div></div>
+					<div class="set-foot">
+						<button id="faces-add">添加图片</button>
+						<input type="file" id="faces-file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden />
+						<span id="faces-msg" class="muted"></span>
+					</div>
+				</div>
+
+				<div id="face-modal" hidden>
+					<div class="modal-card">
+						<div class="modal-head"><b>表情包详情</b><button id="face-close">×</button></div>
+						<div class="modal-body">
+							<div class="face-preview" id="face-preview"></div>
+							<div class="face-edit">
+								<input id="face-detail-summary" placeholder="描述（按意思找图靠它）" />
+								<input id="face-detail-tags" placeholder="标签，空格分隔" />
+								<div class="face-meta" id="face-detail-meta"></div>
+							</div>
+						</div>
+						<div class="modal-foot">
+							<button id="face-save">保存</button>
+							<button id="face-del">删除</button>
+							<span id="face-modal-msg" class="muted"></span>
+						</div>
+					</div>
+				</div>
+
+				<div class="card" id="prompt-card">
+					<div class="set-head">
+						<b>提示词片段（静态，落文件）</b>
+						<span class="muted">
+							人设、规矩、收尾这些「可改动项」都躺在文件里，插件启动时拼一次就<b>冻结</b>，之后 system 一个字节都不动 ——
+							宿主那边 system 是每轮<b>整块替换</b>第一个节点，里面变一个字，前缀缓存连历史一起全废。<br />
+							改完点「保存并重载」：下一次请求重新拼一次（受控动作，不是每轮重算）。不点就等重启。
+						</span>
+					</div>
+					<div id="prompt-body" class="set-body"><div class="muted">加载中…</div></div>
+					<div class="set-foot">
+						<button id="prompt-save">保存并重载</button>
+						<span id="prompt-msg" class="muted"></span>
+					</div>
+				</div>
+				<div class="tip">
+					这些设置只对<b>当前选中的群</b>生效。没勾「跟随全局」的项会写进
+					<code>settings.json</code> 的 <code>groupOverrides["群号"]</code>，别的群不受影响。<br />
+					三阈值必须满足 <code>冷静 &lt; 愤怒 &lt; 逃离</code>，填反了后端会自动夹回合法区间。
+				</div>
+			</section>
+		</main>
+		<script>
+			(function () {
+				var PHASE = {
+					hot: { fill: "rgba(126,224,192,0.07)", name: "热窗", color: "#7ee0c0" },
+					cold: { fill: "rgba(91,157,255,0.07)", name: "冷窗", color: "#5b9dff" },
+					ignore: { fill: "rgba(255,123,114,0.14)", name: "无视冷窗", color: "#ff7b72" },
+				};
+				var DATA = null;
+				var KEY = null;
+				/* 情绪档位的兜底文案（正常走后端 moodOf 给的 label，这里只在老接口没带 mood 时用） */
+				var MOOD_TEXT = {
+					calm: "平静",
+					annoyed: "烦躁",
+					angry: "愤怒",
+					escape: "跑路",
+					gone: "跑路中",
+				};
+				var errBox = null;
+
+				function esc(s) {
+					return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+						return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+					});
+				}
+				function pad(n) {
+					return (n < 10 ? "0" : "") + n;
+				}
+				function hhmm(t) {
+					var d = new Date(t);
+					return pad(d.getHours()) + ":" + pad(d.getMinutes());
+				}
+				function hhmmss(t) {
+					var d = new Date(t);
+					return pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+				}
+
+				function fmtMs(ms) {
+					var s = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+					if (s < 60) return s + " 秒";
+					var m = Math.floor(s / 60);
+					var r = s % 60;
+					return r ? m + " 分 " + r + " 秒" : m + " 分";
+				}
+				function fmtCd(ms) {
+					var tot = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+					var m = Math.floor(tot / 60);
+					var s = tot % 60;
+					return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s;
+				}
+
+				var LAST = null;
+
+				/* 状态卡片：相位 / 烦躁度 / 本档时长 / 倒计时 / 攒着多少 */
+				function renderStats(s) {
+					var box = document.getElementById("stats");
+					if (!box) return;
+					if (!s) {
+						box.innerHTML = '<div class="st"><div class="k">状态</div><div class="v">—</div><div class="s">还没有会话</div></div>';
+						return;
+					}
+					var name = (PHASE[s.phase] || {}).name || s.phase;
+					var range = s.phase === "hot" ? DATA.hotMs : s.phase === "cold" ? DATA.coldMs : null;
+					var remain = Math.max(0, (Number(s.untilAt) || 0) - Date.now());
+					var span = Math.max(0, Number(s.span) || 0);
+					var elapsed = span > 0 ? Math.max(0, Math.min(100, (1 - remain / span) * 100)) : 0;
+					var next = s.phase === "hot" ? "→ 冷窗" : s.phase === "cold" ? "→ 热窗" : "→ 回热窗";
+					var ign = Math.max(0, Math.min(100, Number(s.ignite) || 0));
+					var thr = Number(s.escape) || Number(DATA.threshold) || 70;
+					var angerThr = Number(s.anger) || Number(DATA.angerThreshold) || Math.round(thr * 0.7);
+					var calmThr = Number(s.calm) || Number(DATA.exitThreshold) || 30;
+					var rangeText = range
+						? "区间 " + fmtMs(range[0]) + " – " + fmtMs(range[1])
+						: "按烦躁度回落（上限 " + fmtMs(span) + "）";
+					// 接话节奏：跟后端 rhythm.mergeWindowOf 用同一套输入算出来，不是页面瞎猜
+					var wMin = Math.max(0, Number(DATA.mergeWindowMs) || 0);
+					var wMax = Math.max(wMin, Number(DATA.mergeWindowMaxMs) || 0);
+					var wait = Math.max(0, Number(s.mergeWindow) || 0);
+					var waitRange =
+						wMin > 0
+							? fmtMs(wMin) + " → " + fmtMs(wMax) + "，烦躁度越高等越久（新消息会重新计时）"
+							: "已关闭（来一条回一条）";
+					var nearCap = ign >= thr * 0.85;
+					// 情绪档位：后端 /api/dsh-qq/rhythm 已经算好（moodOf），这里只负责兜底和上色
+					var mood = s.mood || null;
+					var moodKey =
+						mood && mood.key
+							? mood.key
+							: ign >= thr
+								? "escape"
+								: ign >= angerThr
+									? "angry"
+									: ign >= calmThr
+										? "annoyed"
+										: "calm";
+					var moodLabel = (mood && mood.label) || MOOD_TEXT[moodKey] || "平静";
+					var moodHint = (mood && mood.hint) || "";
+					var moodHot = moodKey === "angry" || moodKey === "escape" || moodKey === "gone";
+					box.innerHTML =
+						'<div class="st ' +
+						s.phase +
+						'"><div class="k">当前相位</div><div class="v">' +
+						name +
+						'</div><div class="s">本档 ' +
+						fmtMs(span) +
+						" · " +
+						rangeText +
+						"</div></div>" +
+						'<div class="st' +
+						(ign >= thr ? " ignore" : "") +
+						'"><div class="k">烦躁度</div><div class="v">' +
+						Math.round(ign) +
+						" / 100</div>" +
+						'<div class="v-bar"><i class="' +
+						(ign >= thr ? "hi" : "") +
+						'" style="width:' +
+						ign +
+						'%"></i></div>' +
+						'<div class="s">本条打分 ' +
+						(s.lastScore == null ? "-" : s.lastScore) +
+						" · 阈值 " +
+						thr +
+						"</div></div>" +
+						'<div class="st' +
+						(moodHot ? " ignore" : "") +
+						'"><div class="k">情绪</div><div class="v">' +
+						esc(moodLabel) +
+						'</div><div class="s">' +
+						esc(moodHint) +
+						"</div></div>" +
+						'<div class="st ' +
+						s.phase +
+						'"><div class="k">换档倒计时</div><div class="v" id="cd" title="到期 ' +
+						(s.untilAt ? new Date(s.untilAt).toLocaleTimeString("zh-CN", { hour12: false }) : "—") +
+						'">' +
+						fmtCd(remain) +
+						"</div>" +
+						'<div class="v-bar"><i style="width:' +
+						elapsed.toFixed(1) +
+						'%"></i></div><div class="s">' +
+						next +
+						"</div></div>" +
+						'<div class="st"><div class="k">攒着 / 丢弃</div><div class="v">' +
+						(s.holdCount || 0) +
+						" 条</div><div class=\"s\">丢过 " +
+						(s.drops || 0) +
+						" · 回过 " +
+						(s.replies || 0) +
+						"</div></div>" +
+						'<div class="st' +
+						(nearCap ? " ignore" : "") +
+						'"><div class="k">接话节奏（这一轮会等）</div><div class="v">' +
+						(wait > 0 ? fmtMs(wait) : "关") +
+						'</div><div class="s">' +
+						waitRange +
+						"</div></div>" +
+						(nearCap && wait > 0
+							? '<div class="st ignore"><div class="k">下一步</div><div class="v">快到上限</div>' +
+								'<div class="s">再烦一点就等满 ' +
+								fmtMs(wMax) +
+								"，然后说一句走人（无视冷窗）</div></div>"
+							: "");
+				}
+
+				function renderSelect() {
+					var sel = document.getElementById("sel");
+					var list = (DATA && DATA.sessions) || [];
+					var sig = list
+						.map(function (s) {
+							return s.key;
+						})
+						.join("|");
+					if (sel.dataset.sig !== sig) {
+						sel.innerHTML = list.length
+							? list
+									.map(function (s) {
+										var id = s.sessionId ? " · " + s.sessionId.slice(0, 8) : "";
+										return '<option value="' + esc(s.key) + '">' + esc(s.label) + id + "</option>";
+									})
+									.join("")
+							: '<option value="">（还没有会话）</option>';
+						sel.dataset.sig = sig;
+					}
+					var exists = list.some(function (s) {
+						return s.key === KEY;
+					});
+					if (!exists) KEY = list.length ? list[0].key : null;
+					sel.value = KEY || "";
+				}
+
+				function render() {
+					var svg = document.getElementById("chart");
+					var stat = document.getElementById("stat");
+					var list = (DATA && DATA.sessions) || [];
+					var s = null;
+					for (var i = 0; i < list.length; i++) if (list[i].key === KEY) s = list[i];
+					if (!s) {
+						svg.innerHTML =
+							'<text x="500" y="200" text-anchor="middle" fill="#8b98a9" font-size="14">还没有采样点</text>' +
+							'<text x="500" y="226" text-anchor="middle" fill="#5a6472" font-size="12">它在群里说过话、或者被 @ 过一次，这里才会有曲线</text>';
+						stat.textContent = "";
+						LAST = null;
+						renderStats(null);
+						return;
+					}
+					var ph = PHASE[s.phase] || { name: s.phase };
+					var autoNote = DATA.ignoreAuto === false ? " · 自动触发已关（只记录不动作）" : "";
+					stat.textContent =
+						ph.name +
+						" · 当前 " +
+						s.ignite +
+						"/100（本条打分 " +
+						(s.lastScore == null ? "-" : s.lastScore) +
+						"）" +
+						autoNote;
+					LAST = s;
+					renderStats(s);
+					var pts = s.points || [];
+					if (pts.length < 2) {
+						svg.innerHTML =
+							'<text x="500" y="210" text-anchor="middle" fill="#8b98a9" font-size="14">采样点还不够（' +
+							pts.length +
+							"/至少 2 个）</text>";
+						return;
+					}
+
+					var W = 1000,
+						H = 420,
+						PL = 48,
+						PR = 18,
+						PT = 16,
+						PB = 30;
+					var t0 = pts[0].t,
+						t1 = pts[pts.length - 1].t;
+					if (t1 - t0 < 60000) t1 = t0 + 60000;
+					var span = t1 - t0;
+					// 阈值按这个群自己的来（后端 sessions[] 里带 calm/anger/escape）
+					var thr = Number(s.escape) || Number(DATA.threshold) || 70;
+					var exitThr = Number(s.calm) || Number(DATA.exitThreshold);
+					if (!isFinite(exitThr)) exitThr = 30;
+					var angerThr = Number(s.anger) || Number(DATA.angerThreshold);
+					if (!isFinite(angerThr)) angerThr = Math.round((exitThr + thr) / 2);
+
+					function X(t) {
+						return PL + ((t - t0) / span) * (W - PL - PR);
+					}
+					function Y(v) {
+						return PT + (1 - v / 100) * (H - PT - PB);
+					}
+
+					var out = "";
+					// 相位底色
+					var i = 0;
+					while (i < pts.length) {
+						var p = pts[i].p;
+						var j = i;
+						while (j + 1 < pts.length && pts[j + 1].p === p) j += 1;
+						var x1 = X(pts[i].t);
+						var x2 = j + 1 < pts.length ? X(pts[j + 1].t) : X(t1);
+						var c = PHASE[p] || { fill: "rgba(255,255,255,0.03)" };
+						out +=
+							'<rect x="' +
+							x1.toFixed(1) +
+							'" y="' +
+							PT +
+							'" width="' +
+							Math.max(1, x2 - x1).toFixed(1) +
+							'" height="' +
+							(H - PT - PB) +
+							'" fill="' +
+							c.fill +
+							'"/>';
+						i = j + 1;
+					}
+					// 网格 + Y 刻度
+					for (var v = 0; v <= 100; v += 25) {
+						var y = Y(v);
+						out +=
+							'<line x1="' +
+							PL +
+							'" y1="' +
+							y +
+							'" x2="' +
+							(W - PR) +
+							'" y2="' +
+							y +
+							'" stroke="#1d2531" stroke-width="1"/>';
+						out +=
+							'<text x="' +
+							(PL - 8) +
+							'" y="' +
+							(y + 4) +
+							'" text-anchor="end" fill="#8b98a9" font-size="11">' +
+							v +
+							"</text>";
+					}
+					// 三条阈值线（2026-11-02）：冷静 / 愤怒 / 逃离
+					function hline(v, color, dash, label) {
+						var y = Y(v);
+						return (
+							'<line x1="' + PL + '" y1="' + y + '" x2="' + (W - PR) + '" y2="' + y +
+							'" stroke="' + color + '" stroke-width="1" stroke-dasharray="' + dash + '"/>' +
+							'<text x="' + (PL + 4) + '" y="' + (y - 5) + '" fill="' + color + '" font-size="11">' +
+							label + " " + v + "</text>"
+						);
+					}
+					out += hline(thr, "#ff7b72", "5 4", "逃离");
+					out += hline(angerThr, "#ffb86b", "4 4", "愤怒");
+					out += hline(exitThr, "#8b98a9", "2 4", "冷静");
+					// X 刻度
+					for (var k = 0; k <= 5; k++) {
+						var tt = t0 + (span * k) / 5;
+						out +=
+							'<text x="' +
+							X(tt).toFixed(1) +
+							'" y="' +
+							(H - 10) +
+							'" text-anchor="middle" fill="#8b98a9" font-size="11">' +
+							hhmm(tt) +
+							"</text>";
+					}
+					// 折线：按值分段染色 —— 高过「进入阈值」就是会触发的那一段，画红；
+					// 其余画绿。一整条 path 只能一种颜色，所以拆成逐段 line 拼。
+					for (var n2 = 1; n2 < pts.length; n2++) {
+						var pa = pts[n2 - 1];
+						var pb = pts[n2];
+						var col = (pa.v + pb.v) / 2 >= thr ? "#ff7b72" : "#7ee0c0";
+						out +=
+							'<line x1="' +
+							X(pa.t).toFixed(1) +
+							'" y1="' +
+							Y(pa.v).toFixed(1) +
+							'" x2="' +
+							X(pb.t).toFixed(1) +
+							'" y2="' +
+							Y(pb.v).toFixed(1) +
+							'" stroke="' +
+							col +
+							'" stroke-width="1.7" stroke-linecap="round"/>';
+					}
+					// 采样点（最多画 240 个，免得几千个圆点糊成一团）
+					var step = Math.max(1, Math.floor(pts.length / 240));
+					for (var m = 0; m < pts.length; m += step) {
+						var q = pts[m];
+						var pn = (PHASE[q.p] || {}).name || q.p;
+						out +=
+							'<circle cx="' +
+							X(q.t).toFixed(1) +
+							'" cy="' +
+							Y(q.v).toFixed(1) +
+							'" r="2.2" fill="' +
+							(q.v >= thr ? "#ff7b72" : "#7ee0c0") +
+							'" fill-opacity="0.85"><title>' +
+							hhmmss(q.t) +
+							" · " +
+							q.v +
+							" · " +
+							pn +
+							"</title></circle>";
+					}
+					svg.innerHTML = out;
+				}
+
+				async function load() {
+					try {
+						var r = await fetch("/api/dsh-qq/rhythm", { credentials: "same-origin" });
+						var j = await r.json();
+						if (!j || !j.ok) throw new Error((j && j.error) || "读不到数据");
+						DATA = j;
+						if (errBox) {
+							errBox.remove();
+							errBox = null;
+						}
+						renderSelect();
+						render();
+					} catch (e) {
+						if (!errBox) {
+							errBox = document.createElement("div");
+							errBox.className = "tip err";
+							document.querySelector("main").prepend(errBox);
+						}
+						errBox.textContent = "读取失败：" + e.message + "（宿主重启后接口才挂上？）";
+					}
+				}
+
+				document.getElementById("sel").addEventListener("change", function (e) {
+					KEY = e.target.value;
+					render();
+					// 切群的时候设置页也要跟着换 —— 否则显示的还是上一个群的配置
+					if (TAB === "settings") {
+						loadSettings();
+						loadRsa();
+					}
+				});
+				document.getElementById("refresh").addEventListener("click", function () {
+					if (TAB === "settings") {
+						loadSettings();
+						loadRsa();
+					} else load();
+				});
+				setInterval(function () {
+					if (TAB === "status" && document.getElementById("auto").checked) load();
+				}, 5000);
+				// 倒计时每秒走一格：只重绘状态卡片，不重新请求（不然 1 秒一个 HTTP 太浪费）
+				setInterval(function () {
+					if (LAST) renderStats(LAST);
+				}, 1000);
+				/* ───────── 群聊设置 tab（2026-11-02） ───────── */
+
+				var TAB = "status";
+				var SET = null;
+				// 下拉里没有的群手填的群号。刷新页面还要记得，所以存 localStorage。
+				var MANUAL_GID = (function () {
+					try {
+						return localStorage.getItem("dshqq.manualGid") || "";
+					} catch (e) {
+						return "";
+					}
+				})();
+
+				/**
+				 * 从下拉的 value 里抽出**纯群号**。
+				 *
+				 * 下拉的 value 是节奏层的 key，形如 `group:128380059` —— 后端只认纯数字，
+				 * 直接把它当群号发给后端会被拒（"需要一个群号"）。这里统一剥一层。
+				 */
+				function peerIdOf() {
+					var k = String(KEY || "");
+					var m = k.match(/^(?:group|private):(\d+)$/);
+					if (m) return m[1];
+					if (/^\d+$/.test(k)) return k;
+					if (/^\d+$/.test(MANUAL_GID)) return MANUAL_GID;
+					return "";
+				}
+
+				function setMsg(t, bad) {
+					var el = document.getElementById("set-msg");
+					if (!el) return;
+					el.textContent = t || "";
+					el.className = bad ? "err" : "muted";
+				}
+
+				/** 下拉里没有可选的群（还没接过话）时，让人手填一个群号。 */
+				function renderNeedGroup() {
+					var box = document.getElementById("set-body");
+					if (!box) return;
+					box.innerHTML =
+						'<div class="row"><span class="k">群号</span>' +
+						'<input id="set-gid" type="text" placeholder="比如 770375717" value="' + esc(MANUAL_GID) + '" />' +
+						'<button id="set-gid-go">打开</button></div>' +
+						'<div class="hint">上面那个下拉里只会出现<b>已经接过话</b>的群。没聊过的群填群号进来改就行，填过会记住。</div>';
+					var go = document.getElementById("set-gid-go");
+					if (go)
+						go.addEventListener("click", function () {
+							var raw = String(document.getElementById("set-gid").value || "").replace(/\D/g, "");
+							if (!raw) return alert("填一个群号");
+							MANUAL_GID = raw;
+							try {
+								localStorage.setItem("dshqq.manualGid", raw);
+							} catch (e) {
+								/* 存不了就算了 */
+							}
+							loadSettings();
+							loadRsa();
+						});
+				}
+
+				function setMsg(t, bad) {
+					var el = document.getElementById("set-msg");
+					if (!el) return;
+					el.textContent = t || "";
+					el.className = bad ? "err" : "muted";
+				}
+
+				function switchTab(name) {
+					TAB = name;
+					var isSet = name === "settings";
+					document.getElementById("view-status").hidden = isSet;
+					document.getElementById("view-settings").hidden = !isSet;
+					document.getElementById("tab-status").classList.toggle("on", !isSet);
+					document.getElementById("tab-settings").classList.toggle("on", isSet);
+					// 设置页不留自动刷新：正在输入的时候被刷一下，填的东西就没了
+					document.getElementById("auto-wrap").style.display = isSet ? "none" : "";
+					if (isSet) {
+						loadSettings();
+						loadRsa();
+						loadEmbed();
+						loadPromptFiles();
+						loadFaces();
+					}
+				}
+
+				function rowHtml(f) {
+					var id = "f_" + f.key;
+					var dis = f.following && !f.noFollow ? " disabled" : "";
+					var ctl;
+					if (f.type === "boolean") {
+						ctl = '<label class="follow"><input type="checkbox" id="' + id + '"' + (f.value ? " checked" : "") + dis + " />开</label>";
+					} else if (f.type === "select") {
+						ctl =
+							'<select id="' + id + '"' + dis + ">" +
+							(f.options || [])
+								.map(function (o) {
+									return (
+										'<option value="' + esc(o.value) + '"' +
+										(String(o.value) === String(f.value) ? " selected" : "") +
+										">" + esc(o.label) + "</option>"
+									);
+								})
+								.join("") +
+							"</select>";
+					} else if (f.type === "textarea" || f.type === "lines") {
+						var val = f.type === "lines" ? (f.value || []).join("\n") : f.value || "";
+						ctl =
+							'<textarea id="' + id + '" rows="3"' +
+							(f.type === "lines" ? ' placeholder="一行一条"' : "") +
+							dis + ">" + esc(val) + "</textarea>";
+					} else {
+						ctl =
+							'<input type="number" id="' + id + '" value="' + esc(f.value) + '"' +
+							(f.min !== undefined ? ' min="' + f.min + '"' : "") +
+							(f.max !== undefined ? ' max="' + f.max + '"' : "") +
+							(f.step !== undefined ? ' step="' + f.step + '"' : "") +
+							dis + " />";
+					}
+					var unit = f.type === "number" && f.unit ? '<span class="unit">' + esc(f.unit) + "</span>" : "<span></span>";
+					var hint = f.hint
+						? '<div class="hint">' + esc(f.hint) + (f.following ? "（全局值 " + esc(String(f.global == null ? "—" : f.global)) + "）" : "") + "</div>"
+						: "";
+					return (
+						'<div class="row" data-key="' + esc(f.key) + '">' +
+						(f.noFollow
+							? '<span class="follow" style="opacity:.45">—</span>'
+							: '<label class="follow"><input type="checkbox" data-follow="' + esc(f.key) + '"' +
+								(f.following ? " checked" : "") + " />跟随全局</label>") +
+						'<span class="k">' + esc(f.label) + "</span>" +
+						ctl +
+						unit +
+						hint +
+						"</div>"
+					);
+				}
+
+				function renderSettings(data) {
+					SET = data;
+					var box = document.getElementById("set-body");
+					if (!box) return;
+					box.innerHTML = (data.sections || [])
+						.map(function (sec) {
+							return (
+								'<div class="sec"><div class="sec-name">' + esc(sec.name) + "</div>" +
+								sec.fields.map(rowHtml).join("") +
+								"</div>"
+							);
+						})
+						.join("");
+					bindSettings();
+				}
+
+				function findField(key) {
+					if (!SET) return null;
+					for (var i = 0; i < SET.sections.length; i++) {
+						var fs = SET.sections[i].fields;
+						for (var j = 0; j < fs.length; j++) if (fs[j].key === key) return fs[j];
+					}
+					return null;
+				}
+
+				function readField(f, el) {
+					if (f.type === "boolean") return el.checked;
+					if (f.type === "lines") {
+						return String(el.value || "")
+							.split(/\r?\n/)
+							.map(function (s) {
+								return s.trim();
+							})
+							.filter(Boolean);
+					}
+					if (f.type === "textarea" || f.type === "select") return el.value;
+					var n = Number(el.value);
+					return isFinite(n) ? n : 0;
+				}
+
+				async function saveField(key, value) {
+					var gid = peerIdOf();
+					if (!gid) return setMsg("先在上面填一个群号", true);
+					try {
+						setMsg("保存中…");
+						var r = await fetch("/api/dsh-qq/group-settings", {
+							method: "POST",
+							headers: { "content-type": "application/json" },
+							credentials: "same-origin",
+							body: JSON.stringify({ group: gid, key: key, value: value }),
+						});
+						var j = await r.json();
+						if (!j || !j.ok) throw new Error((j && j.error) || "保存失败");
+						setMsg("已" + (j.following ? "恢复跟随全局" : "保存") + "：" + key);
+						await loadSettings();
+					} catch (e) {
+						setMsg("保存失败：" + e.message, true);
+					}
+				}
+
+				function bindSettings() {
+					var box = document.getElementById("set-body");
+					if (!box) return;
+					Array.prototype.forEach.call(box.querySelectorAll("input[data-follow]"), function (cb) {
+						cb.addEventListener("change", function () {
+							var key = cb.getAttribute("data-follow");
+							if (cb.checked) return saveField(key, null);
+							// 取消勾选：把当前生效值原样存一份，它就变成"这个群单独设的"
+							var f = findField(key);
+							return saveField(key, f ? f.value : null);
+						});
+					});
+					Array.prototype.forEach.call(box.querySelectorAll(".row[data-key]"), function (row) {
+						var key = row.getAttribute("data-key");
+						var f = findField(key);
+						if (!f) return;
+						var el = row.querySelector("input:not([data-follow]), select, textarea");
+						if (!el) return;
+						var evt = el.tagName === "SELECT" || el.type === "checkbox" ? "change" : "input";
+						var timer = null;
+						el.addEventListener(evt, function () {
+							if (el.disabled) return;
+							if (evt === "change") return saveField(key, readField(f, el));
+							clearTimeout(timer);
+							timer = setTimeout(function () {
+								saveField(key, readField(f, el));
+							}, 500);
+						});
+					});
+				}
+
+				async function loadSettings() {
+					if (TAB !== "settings") return;
+					var gid = peerIdOf();
+					if (!gid) return renderNeedGroup();
+					try {
+						var r = await fetch("/api/dsh-qq/group-settings?group=" + encodeURIComponent(gid), {
+							credentials: "same-origin",
+						});
+						var j = await r.json();
+						if (!j || !j.ok) throw new Error((j && j.error) || "读不到");
+						renderSettings(j);
+					} catch (e) {
+						var box = document.getElementById("set-body");
+						if (box) box.innerHTML = '<div class="err">读设置失败：' + esc(e.message) + "</div>";
+					}
+				}
+
+				document.getElementById("tab-status").addEventListener("click", function () {
+					switchTab("status");
+				});
+				document.getElementById("tab-settings").addEventListener("click", function () {
+					switchTab("settings");
+				});
+				document.getElementById("prompt-save").addEventListener("click", function () {
+					savePromptFiles();
+				});
+				// 表情包收藏：添加按钮 → 触发隐藏的 file input；列表里用事件委托处理「存 / 删」
+				document.getElementById("faces-add").addEventListener("click", function () {
+					var f = document.getElementById("faces-file");
+					if (f) f.click();
+				});
+				document.getElementById("faces-file").addEventListener("change", function (e) {
+					uploadFaces(e.target.files);
+					e.target.value = "";
+				});
+				document.getElementById("faces-body").addEventListener("click", function (e) {
+					var tile = e.target && e.target.closest ? e.target.closest(".face-tile") : null;
+					if (!tile) return;
+					openFaceDetail(tile.getAttribute("data-id"));
+				});
+				document.getElementById("face-close").addEventListener("click", closeFaceDetail);
+				document.getElementById("face-modal").addEventListener("click", function (e) {
+					// 点遮罩（不是卡片本身）就关掉
+					if (e.target && e.target.id === "face-modal") closeFaceDetail();
+				});
+				document.getElementById("face-save").addEventListener("click", saveFaceDetail);
+				document.getElementById("face-del").addEventListener("click", deleteFaceDetail);
+				document.addEventListener("keydown", function (e) {
+					if (e.key === "Escape") {
+						var m = document.getElementById("face-modal");
+						if (m && !m.hidden) closeFaceDetail();
+					}
+				});
+				document.getElementById("set-reset-all").addEventListener("click", async function () {
+					if (!confirm("把这个群所有设置都恢复成「跟随全局」？")) return;
+					var keys = [];
+					if (SET) {
+						SET.sections.forEach(function (s) {
+							s.fields.forEach(function (f) {
+								if (!f.following) keys.push(f.key);
+							});
+						});
+					}
+					if (!keys.length) return setMsg("这个群本来就没有单独设置");
+					for (var i = 0; i < keys.length; i++) await saveField(keys[i], null);
+					setMsg("已全部恢复跟随全局");
+				});
+
+				/* ───────── RSA 命令通道（2026-11-02） ───────── */
+
+				var RSA = null;
+
+				function pemToBuf(pem) {
+					var b64 = String(pem || "")
+						.replace(/-----[^-]+-----/g, "")
+						.replace(/\s+/g, "");
+					var bin = atob(b64);
+					var buf = new Uint8Array(bin.length);
+					for (var i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+					return buf.buffer;
+				}
+
+				function bufToB64(buf) {
+					var bytes = new Uint8Array(buf);
+					var s = "";
+					for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+					return btoa(s);
+				}
+
+				/** 用页面上的公钥加密一条命令。私钥在服务端，这里只用到公钥。 */
+				async function encryptCommand(text) {
+					var pem = document.getElementById("rsa-pub").value;
+					var prefix = (RSA && RSA.prefix) || "#ENC:";
+					var key = await crypto.subtle.importKey(
+						"spki",
+						pemToBuf(pem),
+						{ name: "RSA-OAEP", hash: "SHA-256" },
+						false,
+						["encrypt"],
+					);
+					var out = await crypto.subtle.encrypt(
+						{ name: "RSA-OAEP" },
+						key,
+						new TextEncoder().encode(text),
+					);
+					return prefix + bufToB64(out);
+				}
+
+				function renderRsa(j) {
+					RSA = j;
+					var box = document.getElementById("rsa-body");
+					if (!box) return;
+					if (!j.hasKey) {
+						box.innerHTML =
+							'<div class="muted">这个群还没有密钥对。生成之后把公钥贴给要用的人（或者自己留着）。</div>' +
+							'<div class="set-foot"><button id="rsa-gen">生成密钥对</button></div>';
+					} else {
+						box.innerHTML =
+							'<div class="row"><span class="k">公钥</span>' +
+							'<textarea id="rsa-pub" rows="4" readonly>' + esc(j.publicKey) + "</textarea>" +
+							'<span class="unit"></span></div>' +
+							'<div class="row"><span class="k">生成于</span>' +
+							'<span class="muted">' + esc(new Date(j.createdAt || 0).toLocaleString()) + " · " + esc(j.algorithm || "") + "</span>" +
+							'<button id="rsa-copy">复制公钥</button></div>' +
+							'<div class="row"><span class="k">重置</span>' +
+							'<span class="muted">旧密文会全部失效</span>' +
+							'<button id="rsa-reset">重新生成</button></div>' +
+							'<div class="row"><span class="k">加密命令</span>' +
+							'<input id="rsa-in" type="text" placeholder="/reset" />' +
+							'<button id="rsa-enc">加密</button></div>' +
+							'<div class="row"><span class="k">结果</span>' +
+							'<input id="rsa-out" type="text" readonly placeholder="点「加密」" />' +
+							'<button id="rsa-outcopy">复制</button></div>' +
+							'<div class="row"><span class="k">命令</span>' +
+							'<button id="rsa-help">查看命令清单</button><span class="unit"></span></div>';
+					}
+					bindRsa();
+				}
+
+				async function loadRsa() {
+					if (TAB !== "settings") return;
+					var gid = peerIdOf();
+					if (!gid) return; // 设置页那边会提示手填群号
+					try {
+						var r = await fetch("/api/dsh-qq/rsa?group=" + encodeURIComponent(gid), {
+							credentials: "same-origin",
+						});
+						var j = await r.json();
+						if (!j || !j.ok) throw new Error((j && j.error) || "读不到");
+						renderRsa(j);
+					} catch (e) {
+						var box = document.getElementById("rsa-body");
+						if (box) box.innerHTML = '<div class="err">读密钥失败：' + esc(e.message) + "</div>";
+					}
+				}
+
+				async function postRsa(action) {
+					var gid = peerIdOf();
+					if (!gid) throw new Error("先填一个群号");
+					var r = await fetch("/api/dsh-qq/rsa", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						credentials: "same-origin",
+						body: JSON.stringify({ group: gid, action: action }),
+					});
+					var j = await r.json();
+					if (!j || !j.ok) throw new Error((j && j.error) || "操作失败");
+					return j;
+				}
+
+				function bindRsa() {
+					var g = document.getElementById("rsa-gen");
+					if (g)
+						g.addEventListener("click", async function () {
+							try {
+								await postRsa("ensure");
+								await loadRsa();
+							} catch (e) {
+								alert("生成失败：" + e.message);
+							}
+						});
+
+					var cp = document.getElementById("rsa-copy");
+					if (cp)
+						cp.addEventListener("click", function () {
+							var el = document.getElementById("rsa-pub");
+							el.select();
+							if (navigator.clipboard) navigator.clipboard.writeText(el.value);
+							else document.execCommand("copy");
+							setMsg("公钥已复制");
+						});
+
+					var rs = document.getElementById("rsa-reset");
+					if (rs)
+						rs.addEventListener("click", async function () {
+							if (!confirm("重新生成？旧密文会全部失效，之前发出去的命令都不能用了。")) return;
+							try {
+								await postRsa("reset");
+								await loadRsa();
+								setMsg("密钥已重置");
+							} catch (e) {
+								alert("重置失败：" + e.message);
+							}
+						});
+
+					var en = document.getElementById("rsa-enc");
+					if (en)
+						en.addEventListener("click", async function () {
+							var text = String(document.getElementById("rsa-in").value || "").trim();
+							if (!text) return alert("先填一条命令，比如 /reset");
+							try {
+								document.getElementById("rsa-out").value = await encryptCommand(text);
+								setMsg("已加密，复制发出去就行");
+							} catch (e) {
+								alert("加密失败：" + e.message + "（浏览器要支持 WebCrypto，且页面得是 127.0.0.1 访问的）");
+							}
+						});
+
+					var oc = document.getElementById("rsa-outcopy");
+					if (oc)
+						oc.addEventListener("click", function () {
+							var el = document.getElementById("rsa-out");
+							if (!el.value) return alert("还没有结果");
+							el.select();
+							if (navigator.clipboard) navigator.clipboard.writeText(el.value);
+							else document.execCommand("copy");
+							setMsg("密文已复制，发到群里就行");
+						});
+
+					var hp = document.getElementById("rsa-help");
+					if (hp)
+						hp.addEventListener("click", function () {
+							var list = (RSA && RSA.commands) || [];
+							alert(
+								"能用的命令：\n\n" +
+									list.map(function (c) {
+										return c.cmd + "\n    " + c.desc;
+									}).join("\n\n") +
+									"\n\n开了 RSA 之后，明文命令不响应 —— 只认 " +
+									((RSA && RSA.prefix) || "#ENC:") +
+									"<base64>",
+							);
+						});
+				}
+
+				/* ───────── 表情包语义检索（2026-11-02） ───────── */
+
+				async function postGlobal(patch) {
+					var r = await fetch("/api/dsh-qq/settings", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						credentials: "same-origin",
+						body: JSON.stringify({ patch: patch }),
+					});
+					var j = await r.json();
+					if (!j || !j.ok) throw new Error((j && j.error) || "保存失败");
+					return j;
+				}
+
+				function renderEmbed(j) {
+					var box = document.getElementById("emb-body");
+					if (!box) return;
+					var state = j.enabled
+						? j.available
+							? '<span class="ok">可用 · ' + esc(j.kind || "?") + " · " + (j.dims || 0) + " 维</span>"
+							: '<span class="bad">不可用 — ' + esc(j.reason || "未知原因") + "</span>"
+						: '<span class="muted">开关关着（只用关键词匹配）</span>';
+					box.innerHTML =
+						'<div class="row"><span class="k">服务状态</span>' + state + '<span class="unit"></span></div>' +
+						(j.modelDir ? '<div class="hint">模型：' + esc(j.modelDir) + "</div>" : "") +
+						'<div class="row"><span class="k">使用嵌入</span>' +
+						'<label class="follow"><input type="checkbox" id="emb-on"' + (j.enabled ? " checked" : "") + " />开（全局）</label>" +
+						'<span class="unit"></span></div>' +
+						'<div class="row"><span class="k">匹配阈值</span>' +
+						'<input type="number" id="emb-thr" value="' + esc(j.threshold) + '" min="0.1" max="0.95" step="0.05" />' +
+						'<span class="unit">0~1</span></div>' +
+						'<div class="row"><span class="k">候选数</span>' +
+						'<input type="number" id="emb-k" value="' + esc(j.topK) + '" min="1" max="10" step="1" />' +
+						'<span class="unit">个</span></div>' +
+						'<div class="row"><span class="k">向量覆盖</span>' +
+						'<span class="muted">收藏 ' + (j.total || 0) + " 张，其中 " + (j.withVec || 0) + " 张带向量</span>" +
+						'<span class="unit"></span></div>' +
+						(j.total > 0 && j.withVec < j.total
+							? '<div class="hint">老收藏是在开服务之前收的、没有向量。让它在群里重新收一次同一张图就会补上。</div>'
+							: "");
+					bindEmbed();
+				}
+
+				function bindEmbed() {
+					var on = document.getElementById("emb-on");
+					if (on)
+						on.addEventListener("change", async function () {
+							try {
+								await postGlobal({ faceEmbedEnabled: on.checked });
+								setMsg(on.checked ? "已开启语义检索" : "已关闭，只用关键词");
+								await loadEmbed();
+							} catch (e) {
+								setMsg("保存失败：" + e.message, true);
+							}
+						});
+					var thr = document.getElementById("emb-thr");
+					if (thr) {
+						var t1 = null;
+						thr.addEventListener("input", function () {
+							clearTimeout(t1);
+							t1 = setTimeout(async function () {
+								try {
+									await postGlobal({ faceEmbedThreshold: Number(thr.value) });
+									setMsg("阈值已改成 " + thr.value);
+								} catch (e) {
+									setMsg("保存失败：" + e.message, true);
+								}
+							}, 500);
+						});
+					}
+					var k = document.getElementById("emb-k");
+					if (k) {
+						var t2 = null;
+						k.addEventListener("input", function () {
+							clearTimeout(t2);
+							t2 = setTimeout(async function () {
+								try {
+									await postGlobal({ faceEmbedTopK: Number(k.value) });
+									setMsg("候选数已改成 " + k.value);
+								} catch (e) {
+									setMsg("保存失败：" + e.message, true);
+								}
+							}, 500);
+						});
+					}
+				}
+
+				async function loadEmbed() {
+					if (TAB !== "settings") return;
+					try {
+						var r = await fetch("/api/dsh-qq/embed", { credentials: "same-origin" });
+						var j = await r.json();
+						if (!j || !j.ok) throw new Error((j && j.error) || "读不到");
+						renderEmbed(j);
+					} catch (e) {
+						var box = document.getElementById("emb-body");
+						if (box) box.innerHTML = '<div class="err">读状态失败：' + esc(e.message) + "</div>";
+					}
+				}
+
+				/* ── 表情包收藏：显示 / 改描述 / 增删（2026-11-03）── */
+
+				async function loadFaces() {
+					if (TAB !== "settings") return;
+					var box = document.getElementById("faces-body");
+					try {
+						var r = await fetch("/api/dsh-qq/faces", { credentials: "same-origin" });
+						var j = await r.json();
+						if (!j || !j.ok) throw new Error((j && j.error) || "读不到");
+						renderFaces(j);
+					} catch (e) {
+						if (box) box.innerHTML = '<div class="err">读表情包收藏失败：' + esc(e.message) + "</div>";
+					}
+				}
+
+				var FACES = [];
+				var FACE_EDIT = "";
+
+				function renderFaces(j) {
+					var box = document.getElementById("faces-body");
+					if (!box) return;
+					FACES = (j && j.list) || [];
+					if (FACES.length === 0) {
+						box.innerHTML =
+							'<div class="muted">还没有收藏。看到她喜欢的那张，让她用 <code>qq_keep_face</code> 收；' +
+							"或者点下面的「添加图片」自己塞一张进来。</div>";
+						return;
+					}
+					box.innerHTML =
+						'<div class="face-grid">' +
+						FACES.map(function (f) {
+							var thumb = f.preview
+								? '<img src="' + esc(f.preview) + '" alt="" loading="lazy" />'
+								: "商城<br/>表情";
+							var badges = "";
+							if (!f.hasVec) badges += '<i class="face-badge">无向量</i>';
+							if (f.missing) badges += '<i class="face-badge miss">文件丢</i>';
+							return (
+								'<div class="face-tile" data-id="' +
+								esc(f.id) +
+								'" title="' +
+								esc(f.summary || "（还没写描述）") +
+								'">' +
+								thumb +
+								badges +
+								"</div>"
+							);
+						}).join("") +
+						"</div>" +
+						'<div class="muted" style="margin-top:10px">共 ' +
+						esc(String(j.total)) +
+						" 张，带向量 " +
+						esc(String(j.withVec)) +
+						" 张 · 点任意一张看大图、改描述" +
+						(j.dir ? " · 目录 " + esc(j.dir) : "") +
+						"</div>";
+				}
+
+				function openFaceDetail(id) {
+					var f = null;
+					for (var i = 0; i < FACES.length; i++) if (FACES[i].id === id) f = FACES[i];
+					if (!f) return;
+					FACE_EDIT = id;
+					document.getElementById("face-detail-summary").value = f.summary || "";
+					document.getElementById("face-detail-tags").value = (f.tags || []).join(" ");
+					document.getElementById("face-preview").innerHTML = f.preview
+						? '<img src="' + esc(f.preview) + '" alt="" />'
+						: '<div class="muted">商城表情<br/>没有本地图</div>';
+					var meta = [f.kind === "mface" ? "商城表情" : "本地图片", f.hasVec ? "有向量" : "无向量"];
+					if (f.missing) meta.push("文件丢了");
+					if (f.file) meta.push(f.file);
+					if (f.size) meta.push(Math.round(f.size / 1024) + " KB");
+					if (f.at) meta.push(String(f.at).slice(0, 10));
+					document.getElementById("face-detail-meta").textContent = meta.join(" · ");
+					document.getElementById("face-modal-msg").textContent = "";
+					document.getElementById("face-modal").hidden = false;
+					var input = document.getElementById("face-detail-summary");
+					if (input) input.focus();
+				}
+
+				function closeFaceDetail() {
+					FACE_EDIT = "";
+					var m = document.getElementById("face-modal");
+					if (m) m.hidden = true;
+				}
+
+				async function saveFaceDetail() {
+					var msg = document.getElementById("face-modal-msg");
+					if (!FACE_EDIT) return;
+					var summary = document.getElementById("face-detail-summary").value;
+					var tags = document
+						.getElementById("face-detail-tags")
+						.value.split(/[\s,，]+/)
+						.filter(Boolean);
+					try {
+						if (msg) msg.textContent = "保存中…";
+						var j = await facePost({ action: "update", id: FACE_EDIT, summary: summary, tags: tags });
+						if (!j || !j.ok) throw new Error((j && j.error) || "保存失败");
+						if (msg) msg.textContent = j.vec ? "已保存（已重算向量）" : "已保存（向量没算成，关键词还能用）";
+						await loadFaces();
+					} catch (e) {
+						if (msg) msg.textContent = "保存失败：" + e.message;
+					}
+				}
+
+				async function deleteFaceDetail() {
+					var msg = document.getElementById("face-modal-msg");
+					if (!FACE_EDIT) return;
+					if (!confirm("删掉这条收藏？本地图片会一起删掉。")) return;
+					try {
+						if (msg) msg.textContent = "删除中…";
+						var j = await facePost({ action: "delete", id: FACE_EDIT });
+						if (!j || !j.ok) throw new Error((j && j.error) || "删除失败");
+						closeFaceDetail();
+						var tip = document.getElementById("faces-msg");
+						if (tip) tip.textContent = "已删除";
+						await loadFaces();
+					} catch (e) {
+						if (msg) msg.textContent = "删除失败：" + e.message;
+					}
+				}
+
+				async function facePost(payload) {
+					var r = await fetch("/api/dsh-qq/faces", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						credentials: "same-origin",
+						body: JSON.stringify(payload),
+					});
+					return r.json();
+				}
+
+				function readAsDataUrl(file) {
+					return new Promise(function (res, rej) {
+						var fr = new FileReader();
+						fr.onload = function () {
+							res(String(fr.result || ""));
+						};
+						fr.onerror = function () {
+							rej(new Error("读文件失败"));
+						};
+						fr.readAsDataURL(file);
+					});
+				}
+
+
+				async function uploadFaces(files) {
+					var msg = document.getElementById("faces-msg");
+					if (!files || files.length === 0) return;
+					var ok = 0;
+					var bad = [];
+					for (var i = 0; i < files.length; i++) {
+						var f = files[i];
+						if (msg) msg.textContent = "上传中 " + (i + 1) + "/" + files.length + "…";
+						try {
+							var dataUrl = await readAsDataUrl(f);
+							var j = await facePost({
+								action: "add",
+								name: f.name,
+								dataUrl: dataUrl,
+								summary: String(f.name)
+									.replace(/\.[^.]+$/, "")
+									.slice(0, 40),
+							});
+							if (j && j.ok) ok += 1;
+							else bad.push((j && j.error) || f.name);
+						} catch (e) {
+							bad.push(f.name + "：" + e.message);
+						}
+					}
+					if (msg) msg.textContent = "加了 " + ok + " 张" + (bad.length ? "；失败：" + bad.join("；") : "");
+					loadFaces();
+				}
+
+				async function loadPromptFiles() {
+					if (TAB !== "settings") return;
+					try {
+						var r = await fetch("/api/dsh-qq/prompt-files", { credentials: "same-origin" });
+						var j = await r.json();
+						if (!j || !j.ok) throw new Error((j && j.error) || "读不到");
+						renderPromptFiles(j);
+					} catch (e) {
+						var box = document.getElementById("prompt-body");
+						if (box) box.innerHTML = '<div class="err">读提示词文件失败：' + esc(e.message) + "</div>";
+					}
+				}
+
+				var PROMPT_FILES = {};
+
+				function renderPromptFiles(j) {
+					PROMPT_FILES = {};
+					var box = document.getElementById("prompt-body");
+					if (!box) return;
+					var titles = { rules: "规矩.md", persona: "人设.md", tail: "收尾.md", extra: "附加.md" };
+					box.innerHTML = (j.files || [])
+						.map(function (f) {
+							PROMPT_FILES[f.name] = f.text || "";
+							var hint = (j.hints && j.hints[f.name]) || "";
+							return (
+								'<div class="sec"><div class="sec-name">' +
+								esc(titles[f.name] || f.name) +
+								' <span class="muted">' +
+								esc(f.name) +
+								".md · " +
+								(f.exists ? f.chars + " 字" : "还没建") +
+								"</span></div>" +
+								'<div class="muted" style="margin:2px 0 6px">' +
+								esc(hint) +
+								"</div>" +
+								'<textarea data-pf="' +
+								esc(f.name) +
+								'" rows="4" placeholder="' +
+								esc(f.file || "") +
+								'">' +
+								esc(PROMPT_FILES[f.name]) +
+								"</textarea></div>"
+							);
+						})
+						.join("") +
+						'<div class="muted">目录：' +
+						esc(j.dir || "") +
+						"</div>";
+				}
+
+				async function savePromptFiles() {
+					var msg = document.getElementById("prompt-msg");
+					var patch = {};
+					var nodes = document.querySelectorAll("[data-pf]");
+					for (var i = 0; i < nodes.length; i++) {
+						patch[nodes[i].getAttribute("data-pf")] = nodes[i].value;
+					}
+					try {
+						if (msg) msg.textContent = "保存中…";
+						var r = await fetch("/api/dsh-qq/prompt-files", {
+							method: "POST",
+							headers: { "content-type": "application/json" },
+							credentials: "same-origin",
+							body: JSON.stringify({ patch: patch, reload: true }),
+						});
+						var j = await r.json();
+						if (!j || !j.ok) throw new Error((j && (j.error || (j.errors || []).join("；"))) || "保存失败");
+						if (msg) msg.textContent = "已保存并重载（下一轮生效）";
+						loadPromptFiles();
+					} catch (e) {
+						if (msg) msg.textContent = "保存失败：" + e.message;
+					}
+				}
+
+				load();
+			})();
+		</script>
+	</body>
+</html>

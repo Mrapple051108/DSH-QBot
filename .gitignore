@@ -1,0 +1,17 @@
+# 依赖
+node_modules/
+
+# 日志与备份
+logs/
+*.log
+*.bak
+*.bak-*
+
+# 本机临时产物
+tmp/
+.DS_Store
+Thumbs.db
+
+# 打包产物
+*.zip
+*.tgz
