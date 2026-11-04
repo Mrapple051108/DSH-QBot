@@ -499,6 +499,10 @@ dsh plugin --profile desktop add "D:\dsh-chat\dsh-qbot"
 dsh plugin --profile desktop why dsh-qbot
 ```
 
+> **两个名字，别绕晕。** zip / 包名 / 插件显示名都是 **`dsh-qbot`**，但装进 profile 之后，那份**目录**叫
+> `node_modules/dsh-qq-onebot`——沿用上游的占位符，为的是老配置、老对话目录、老表情包收藏还能直接找到。
+> 目录名和包名不一致是**故意的**，两个名字指的是同一个插件；更新时按 `dsh plugin add <zip>` 走就行，别去改目录名。
+
 ### 3. 重启 DSH，填连接信息
 
 重新打开 DSH → **设置 → QQ**，把 `wsUrl` 和 `accessToken` 填进去就行（几十项都在那个面板上，改完即时生效）。
