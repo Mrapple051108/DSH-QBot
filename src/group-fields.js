@@ -73,6 +73,7 @@ export const GROUP_FIELDS = [
   // 长文本回复惩罚（2026-11-04）：前面都在数「别人怎么吵」，这五项数的是自己说太长。
   // 这一组下面接一张小图（rhythm.html 里画），选完参数能立刻看到「连着第几次会顶多少」。
   { g: '烦躁度', key: 'longReplyPenalty', label: '连续长文本回复惩罚', type: 'boolean', hint: '说长话也算账：连着几次超字数就往上顶烦躁度' },
+  { g: '烦躁度', key: 'longReplyPerTurn', label: '按一轮累计', type: 'boolean', hint: '一轮里分几次发也先加起来算，一轮最多罚一次；关掉就每次投递单独判' },
   {
     g: '烦躁度',
     key: 'longReplyChars',

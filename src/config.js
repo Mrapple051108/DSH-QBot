@@ -617,7 +617,14 @@ export const ConfigSchema = Schema.object({
 
   // ── 长文本回复惩罚（2026-11-04 姐姐要的第五条烦躁度来源）──
   // 前面那几项都在数「别人怎么吵」，这一组数的是**自己**：连着甩好几大段也费神。
-  // 判定放在回复真的发出去之后（rhythm.noteReply），不进会话历史、不打扰模型。
+  // 判定放在一轮跑完之后（rhythm.endTurnReply），不进会话历史、不打扰模型。
+  longReplyPerTurn: Schema.boolean()
+    .default(true)
+    .description(
+      '【按一轮累计】开 = 一轮里分几次发（分段正文、几次 qq_send / qq_reply）先把字数加起来，' +
+        '再判这一轮是不是一大段，一轮最多罚一次；关 = 每次投递单独判。' +
+        '关着的时候，一轮里发三条 500 字会被算成「连着三次长回复」，惩罚会比实际重',
+    ),
   longReplyChars: Schema.number()
     .default(400)
     .description(

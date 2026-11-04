@@ -25,6 +25,7 @@ import { auditOutbound } from './audit.js'
 import { lookupMeme } from './meme.js'
 import { downloadImage } from './inbound.js'
 import { safeToolOutput, conformToolOutput } from './shared/json-safe.js'
+import { isPlaceholderSaid } from './shared/long-reply.js'
 
 /**
  * 工具直接发出去的文字也要过审计。
@@ -159,10 +160,16 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
    *
    * 以前只有正文走 send() 才写流水、进 history，用 qq_send / qq_reply 说的话等于「发出去就没了」：
    * 翻聊天记录缺一句，下一轮她自己也不知道自己说过。这里补上，顺带兑现主动开口的额度。
+   *
+   * @param {string} text 写进流水的那句话（正文，或 `[图片]` 这种占位）
+   * @param {{speak?: boolean}} [opts] `speak: false` = 这次发的是图 / 表情 / 文件，
+   *   占位记账而已，不算「说话」：照旧进流水、照旧算一次开口（热窗要重抽），
+   *   但不参与长文本判定 —— 否则发一张表情包就会把「连着几轮说长话」的链子断掉。
    */
-  function noteToolSent(record, text) {
+  function noteToolSent(record, text, opts = {}) {
     const said = String(text ?? '').trim()
     if (!said) return
+    const speak = opts?.speak !== false && !isPlaceholderSaid(said)
     try {
       wake?.noteProactiveDelivered?.(record)
       noteSelfSaid?.(record, said)
@@ -176,10 +183,11 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     // 姐姐看到的「回复一句就重新抽热窗，现在直接不抽了」就是这条：
     // 那几轮它是在用工具说话，压根没走到 send。
     // 表情包/发图/发文件也走这里 —— 往外发了东西就算开口，一起来。
-    // 第三个参数给正文：长文本记账要用（2026-11-04）。表情包和文件没有正文，
-    // 传空串就好，那不算「说了长话」。
+    // 第三个参数给正文：长文本记账要用（2026-11-04）。
+    // 但**占位式记账**（`[图片]`、`[表情包] 无语`、`[文件] x.zip`）不是"说话"：
+    // 传空串进去，既不罚也不把「连续长回复」的链子断掉 —— 发图和说话是两件事。
     try {
-      rhythm?.noteReply?.(record, Date.now(), said)
+      rhythm?.noteReply?.(record, Date.now(), speak ? said : '')
     } catch (err) {
       logger?.warn?.(`工具外发后重抽热窗失败：${err?.message ?? err}`)
     }
@@ -835,7 +843,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
           message: [{ type: 'image', data: { file } }],
         })
         markFaceSent(record.peerId)
-        noteToolSent(record, '[图片]')
+        noteToolSent(record, '[图片]', { speak: false })
         return { ok: true, target: record.label }
       } catch (err) {
         logger.warn?.(`qq_send_image 失败: ${err?.message ?? err}`)
@@ -877,7 +885,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
           ...peerOf(record),
           message: [{ type: 'face', data: { id } }],
         })
-        noteToolSent(record, `[表情 ${id}]`)
+        noteToolSent(record, `[表情 ${id}]`, { speak: false })
         return { ok: true, id }
       } catch (err) {
         logger.warn?.(`qq_face 失败: ${err?.message ?? err}`)
@@ -928,7 +936,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
             name,
           })
         }
-        noteToolSent(record, `[文件] ${name}`)
+        noteToolSent(record, `[文件] ${name}`, { speak: false })
         return { ok: true, target: record.label }
       } catch (err) {
         logger.warn?.(`qq_send_file 失败: ${err?.message ?? err}`)
@@ -1412,7 +1420,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
             if (sentId > 0) {
               record.lastSentMessageId = sentId
               markFaceSent(record.peerId)
-              noteToolSent(record, `[表情包] ${face.summary || '图片'}`)
+              noteToolSent(record, `[表情包] ${face.summary || '图片'}`, { speak: false })
               return { ok: true, mode, messageId: sentId, reason: face.summary || '' }
             }
           } catch (err) {
@@ -1441,7 +1449,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
         if (sentId > 0) {
           record.lastSentMessageId = sentId
           markFaceSent(record.peerId)
-          noteToolSent(record, `[表情包] ${summary}`)
+          noteToolSent(record, `[表情包] ${summary}`, { speak: false })
           return { ok: true, mode: 'mface', messageId: sentId }
         }
       } catch (err) {
@@ -1460,7 +1468,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
           if (sentId > 0) {
             record.lastSentMessageId = sentId
             markFaceSent(record.peerId)
-            noteToolSent(record, `[表情包] ${summary}`)
+            noteToolSent(record, `[表情包] ${summary}`, { speak: false })
             return { ok: true, mode: 'cdn', messageId: sentId }
           }
         } catch (err) {

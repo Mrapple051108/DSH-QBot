@@ -70,6 +70,34 @@ export function longReplyCharsOf(text) {
 }
 
 /**
+ * 这些字数够不够算一次长文本。
+ *
+ * 2026-11-04 晚：判定单位从「一次投递」改成「一轮」，所以入口从**文本**换成**字数** ——
+ * 一轮里可能发了好几次（分段正文 + 几次 `qq_send`），调用方自己把字数加起来再问这句话。
+ */
+export function meetsLongReply(chars, opts = {}) {
+  const need = Math.max(20, Math.round(Number(opts.chars) || 400))
+  return Math.max(0, Math.round(Number(chars) || 0)) >= need
+}
+
+/**
+ * 占位记账：`[图片]`、`[表情 1]`、`[文件] a.zip`、`[表情包] 无语`。
+ *
+ * 这些是插件自己往流水里写的「发了点什么」，不是"说话"。
+ * 它们又短又不带内容，扔进长文本判定会被当成「这一轮说得很短」——
+ * 于是连着两段长话之间发一张表情包，连续计数就被清了。发图和说话是两件事。
+ *
+ * 这里只认**开头**（`[文件] 前面那段是文件名`、`[表情包] 后面是描述` 都算占位）：
+ * 模型的正文几乎不可能以这几种方括号标记开头 —— 那是插件自己的流水格式。
+ * `tools.js` 里另外还显式传了 `{ speak: false }`，两道保险。
+ */
+const PLACEHOLDER_SAID = /^\s*\[(?:图片|表情包|表情|文件)[^\]]*\]/
+
+export function isPlaceholderSaid(text) {
+  return PLACEHOLDER_SAID.test(String(text ?? ''))
+}
+
+/**
  * 连续第 `streak` 次长回复，这一击加多少分。
  *
  * **第 1 次返回 0**：说一段长的很正常，那一下只记账不罚（"连续多次"才是病因）。

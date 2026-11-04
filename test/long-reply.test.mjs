@@ -12,9 +12,11 @@ import assert from 'node:assert/strict'
 import {
   LONG_REPLY_CURVES,
   isLongReply,
+  isPlaceholderSaid,
   longReplyCharsOf,
   longReplySeries,
   longReplyStep,
+  meetsLongReply,
   readLongReplyConfig,
 } from '../src/shared/long-reply.js'
 import { createRhythm } from '../src/rhythm.js'
@@ -295,6 +297,134 @@ ok('不传正文（老调用）不影响热窗重抽', () => {
   rhythm.noteReply(record, t0) // 老签名
   assert.equal(rhythm.snapshot(record, t0).phase, 'hot')
   assert.equal(rhythm.snapshot(record, t0).ignite, 0)
+})
+
+/* ───────── 按轮累计（2026-11-04 晚） ───────── */
+
+console.log('\n[按轮累计]')
+
+// 一轮 = 一次 runTurn。下面用 beginTurnReply / endTurnReply 手工模拟它的两头。
+const HALF = LONG.slice(0, 60) // 60 字，单独不够 100 的线
+
+ok('一轮里分两次发，字数加起来才判', () => {
+  const { rhythm, record } = makeRig()
+  const t0 = Date.now()
+  rhythm.beginTurnReply(record)
+  rhythm.noteReply(record, t0, HALF)
+  rhythm.noteReply(record, t0 + 800, HALF)
+  assert.equal(rhythm.snapshot(record, t0 + 800).ignite, 0, '轮还没结束，先不判')
+  rhythm.endTurnReply(record, t0 + 1200)
+  const s = rhythm.snapshot(record, t0 + 1200)
+  assert.equal(s.longStreak, 1, '120 字 ≥ 100 → 算这一次长回复')
+  assert.equal(s.ignite, 0, '第 1 次只记账')
+})
+
+ok('第二轮再累计够线 → 第 2 次，开始罚', () => {
+  const { rhythm, record } = makeRig()
+  const t0 = Date.now()
+  for (const base of [0, 5_000]) {
+    rhythm.beginTurnReply(record)
+    rhythm.noteReply(record, t0 + base, HALF)
+    rhythm.noteReply(record, t0 + base + 500, HALF)
+    rhythm.endTurnReply(record, t0 + base + 900)
+  }
+  const s = rhythm.snapshot(record, t0 + 6_000)
+  assert.equal(s.longStreak, 2)
+  assert.equal(s.ignite, 20, 'base 10 × n=2')
+})
+
+ok('一轮里连发四段大话只算一次（不再叠成"连着四次"）', () => {
+  const { rhythm, record } = makeRig()
+  const t0 = Date.now()
+  rhythm.beginTurnReply(record)
+  for (let i = 0; i < 4; i += 1) rhythm.noteReply(record, t0 + i * 500, LONG + LONG)
+  rhythm.endTurnReply(record, t0 + 3_000)
+  const s = rhythm.snapshot(record, t0 + 3_000)
+  assert.equal(s.longStreak, 1, '四段合成一轮，只算 1 次')
+  assert.equal(s.ignite, 0)
+})
+
+ok('一轮什么都没发（只查了东西）不影响连续计数', () => {
+  const { rhythm, record } = makeRig()
+  const t0 = Date.now()
+  rhythm.beginTurnReply(record)
+  rhythm.noteReply(record, t0, LONG)
+  rhythm.endTurnReply(record, t0 + 100)
+  // 第二轮：一个字没说
+  rhythm.beginTurnReply(record)
+  rhythm.endTurnReply(record, t0 + 200)
+  assert.equal(rhythm.snapshot(record, t0 + 200).longStreak, 1, '不该被清掉')
+  // 第三轮：又长 → 第 2 次，开始罚
+  rhythm.beginTurnReply(record)
+  rhythm.noteReply(record, t0 + 300, LONG)
+  rhythm.endTurnReply(record, t0 + 400)
+  assert.equal(rhythm.snapshot(record, t0 + 400).ignite, 20)
+})
+
+ok('后面某一轮说得短 → 重新计数', () => {
+  const { rhythm, record } = makeRig()
+  const t0 = Date.now()
+  rhythm.beginTurnReply(record)
+  rhythm.noteReply(record, t0, LONG)
+  rhythm.endTurnReply(record, t0 + 100)
+  rhythm.beginTurnReply(record)
+  rhythm.noteReply(record, t0 + 200, SHORT)
+  rhythm.endTurnReply(record, t0 + 300)
+  assert.equal(rhythm.snapshot(record, t0 + 300).longStreak, 0)
+})
+
+ok('上一轮的字数不会串到下一轮', () => {
+  const { rhythm, record } = makeRig()
+  const t0 = Date.now()
+  rhythm.beginTurnReply(record)
+  rhythm.noteReply(record, t0, LONG + LONG) // 360
+  rhythm.endTurnReply(record, t0 + 100)
+  rhythm.beginTurnReply(record)
+  rhythm.noteReply(record, t0 + 200, SHORT) // 2 字
+  rhythm.endTurnReply(record, t0 + 300)
+  // 账没清的话 360+2 仍够线 → streak 会是 2
+  assert.equal(rhythm.snapshot(record, t0 + 300).longStreak, 0)
+})
+
+ok('关掉「按一轮累计」就退回每次投递单独判', () => {
+  const { rhythm, record } = makeRig({ longReplyPerTurn: false })
+  const t0 = Date.now()
+  rhythm.beginTurnReply(record)
+  rhythm.noteReply(record, t0, HALF) // 60 字：单独不够
+  rhythm.noteReply(record, t0 + 500, HALF) // 又 60 字：单独也不够
+  rhythm.endTurnReply(record, t0 + 900) // 关着时轮末不再补判
+  const s = rhythm.snapshot(record, t0 + 900)
+  assert.equal(s.longStreak, 0)
+  assert.equal(s.ignite, 0)
+})
+
+ok('中间发一张表情包（占位 → 空正文）不会断链', () => {
+  const { rhythm, record } = makeRig()
+  const t0 = Date.now()
+  rhythm.beginTurnReply(record)
+  rhythm.noteReply(record, t0, LONG)
+  rhythm.endTurnReply(record, t0 + 100)
+  // 第二轮只发了表情包：tools.js 会把占位串换成空正文
+  rhythm.beginTurnReply(record)
+  rhythm.noteReply(record, t0 + 200, '')
+  rhythm.endTurnReply(record, t0 + 300)
+  assert.equal(rhythm.snapshot(record, t0 + 300).longStreak, 1)
+})
+
+ok('按字数判定：刚好到线算，差一个字不算', () => {
+  assert.equal(meetsLongReply(100, { chars: 100 }), true)
+  assert.equal(meetsLongReply(99, { chars: 100 }), false)
+  assert.equal(meetsLongReply(0, { chars: 100 }), false)
+})
+
+ok('占位记账被认出来（发图/发文件不算"说话"）', () => {
+  assert.equal(isPlaceholderSaid('[图片]'), true)
+  assert.equal(isPlaceholderSaid('[表情 1]'), true)
+  assert.equal(isPlaceholderSaid('[文件] a.zip'), true)
+  assert.equal(isPlaceholderSaid('[表情包] 抱着白饭碗干饭'), true)
+  assert.equal(isPlaceholderSaid('嗯。'), false)
+  assert.equal(isPlaceholderSaid('这张图挺好 [图片]'), false, '占位标记必须在开头')
+  assert.equal(isPlaceholderSaid(''), false)
 })
 
 console.log(`\n通过 ${pass}，失败 ${fail}`)

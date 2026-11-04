@@ -984,6 +984,14 @@ export function createInbound({ ctx, config, manager, logger, client, send, appr
 
     manager.enqueue(record, async () => {
       let timer = null
+      // 一轮的账从这儿开（2026-11-04 晚）：本轮说出去的每个字先记在 `record.replyTurn` 上，
+      // 跑完由 endTurnReply 一次性判「这一轮算不算一大段」。
+      // 为什么放在 enqueue 回调里而不是外面：排队等着的轮不能共用同一本账。
+      try {
+        rhythm?.beginTurnReply?.(record)
+      } catch (err) {
+        logger.debug?.(`[dsh-qq] ${label} 开轮账失败: ${err?.message ?? err}`)
+      }
       try {
         // 私聊回一句「正在输入」，让对方知道这边在敲字（群聊没有这个概念，跳过）
         if (!isGroup && client) {
@@ -1006,6 +1014,13 @@ export function createInbound({ ctx, config, manager, logger, client, send, appr
           // 只放开队列，不打断 Agent —— 它跑完的回复照样会从 outbound 发出去
           const seconds = Math.round((Date.now() - startedAt) / 1000)
           logger.warn(`[dsh-qq] ${label} 本轮已跑 ${seconds}s 仍未结束，先放开队列`)
+          // 先把这一轮的字数交掉，再发那句提示 —— 否则下面这句话会被算进"本轮说了多少"，
+          // 变成自己给自己加字（虽然只有二三十字，但账要干净）。
+          try {
+            rhythm?.endTurnReply?.(record)
+          } catch {
+            /* 交不交得掉都不影响后面发提示 */
+          }
           if (typeof send === 'function') {
             await send(
               record,
@@ -1015,6 +1030,15 @@ export function createInbound({ ctx, config, manager, logger, client, send, appr
         }
       } catch (err) {
         logger.warn?.(`[dsh-qq] 投递给 ${label} 失败:`, err)
+      } finally {
+        // 超时也算这一轮结束：字已经发出去了，账得交掉（交完就清空）。
+        // 注意 send 失败、抛错、超时这三条路都要走到这儿 —— 不然账会挂着，
+        // 下一轮的字数被加进上一轮，惩罚会串。
+        try {
+          rhythm?.endTurnReply?.(record)
+        } catch (err) {
+          logger.debug?.(`[dsh-qq] ${label} 交轮账失败: ${err?.message ?? err}`)
+        }
       }
     })
   }

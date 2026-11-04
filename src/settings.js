@@ -152,6 +152,7 @@ export const OVERRIDABLE = [
   'ignorePunishRise',
   // 长文本回复惩罚（2026-11-04）
   'longReplyPenalty',
+  'longReplyPerTurn',
   'longReplyChars',
   'longReplyBase',
   'longReplyCurve',

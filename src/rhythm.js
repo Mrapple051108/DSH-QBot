@@ -92,9 +92,10 @@ const STOP_TOKENS = new Set([
 
 import { readThresholds, shapeScore } from './group-settings.js'
 import {
-  isLongReply,
+  isPlaceholderSaid,
   longReplyCharsOf,
   longReplyStep,
+  meetsLongReply,
   readLongReplyConfig,
 } from './shared/long-reply.js'
 
@@ -478,6 +479,8 @@ export function createRhythm({ config, manager, logger, ownerIds = [], buildImag
   const resolveConfig = (peerId) => (typeof cfgFor === 'function' ? cfgFor(peerId) || config : config)
   /** state 上挂的那份配置。每次进 gate/tick 先刷新一下，改设置不用重启。 */
   const cfgOf = (st) => st.cfg || config
+  /** 「长文本按一轮累计」开着没（2026-11-04 晚）。关着 = 每次投递单独判。 */
+  const perTurnOn = (cfg) => cfg?.longReplyPerTurn !== false
 
   const enabled = (cfg = config) => cfg?.rhythmEnabled !== false
   const groupsOnly = (cfg = config) => cfg?.rhythmGroupsOnly !== false
@@ -937,34 +940,43 @@ export function createRhythm({ config, manager, logger, ownerIds = [], buildImag
   /* ───────── 外部接口 ───────── */
 
   /**
-   * 长文本回复记账（2026-11-04）。
+   * 长文本回复记账（2026-11-04；同一天晚上改成**按轮累计**）。
    *
    * 烦躁度原来只由**别人说的话**驱动。姐姐要的是「连续多次回复长文本也去增加烦躁度」——
-   * 连着甩好几大段，本来就该越说越烦。这里在**回复真的发出去之后**记一笔：
+   * 连着甩好几大段，本来就该越说越烦。
    *
-   *   ① 数一下这次算不算长文本（去掉空白后 ≥ longReplyChars）
-   *   ② 不算 → 连续计数清零（中间插一句短的，就断了）
-   *   ③ 算 → 计数 +1，按「惩罚方式」算这一击多少分，直接加进烦躁度
+   * 判定的单位从「一次投递」换成「一轮」（姐姐的问题：「能不能把一轮里连续的
+   * qq_send / qq_reply 放一起统计字数」）。换之前两头都不对：
+   *   一轮里发三条各 500 字 → 被算成「连着三次长回复」，惩罚叠得离谱；
+   *   一轮里发三条各 200 字、加起来 600 → 反而不算。
+   * 现在 `inbound.runTurn` 在本轮开始时开账、结束时交一次账（见下面的 beginTurnReply /
+   * endTurnReply），这里只负责：拿**本轮总字数**判长不长、维护连续次数、加分。
+   *
+   *   ① 本轮总字数（去空白）不到 longReplyChars → 连续计数清零（这一轮说得很短）
+   *   ② 到了 → 计数 +1，按「惩罚方式」算这一击多少分，直接加进烦躁度
    *
    * 第 1 次只记账不罚：说一段长的很正常，连成串才是病因。
    * 直接加而不是走 scoreOf 那条平滑 —— 一次长回复不该被 0.45 的系数吃掉八成，
    * 跟「白嫖请求」的惩罚是同一个道理。
    *
+   * @param {number} chars 这一轮（或这一次投递，没挂轮容器时）说出去的字数
    * @returns {number} 这一击加了多少分（0 = 没加）
    */
-  function noteLongReply(st, text, now) {
+  function noteLongReply(st, chars, now) {
     const cfg = resolveConfig(st.peerId)
     const opts = readLongReplyConfig(cfg)
     if (!opts.enabled) {
       st.longStreak = 0
       return 0
     }
-    const body = String(text ?? '')
-    if (!body.trim()) return 0
+    const n = Math.max(0, Math.round(Number(chars) || 0))
+    // 一个字都没说（只调工具查东西、只发表情包）：不判也不重置 ——
+    // 那既不是"这轮说了长话"，也不是"这轮说得很短"。
+    if (n <= 0) return 0
     // 隔太久就别接着算了：「连续」指的是这一阵子连着说，不是隔半小时又算一次
     const gapMs = Math.max(120_000, num(cfg?.ignoreDecayTauMs, 90_000) * 4)
     if (st.longStreak > 0 && now - st.longAt > gapMs) st.longStreak = 0
-    if (!isLongReply(body, opts)) {
+    if (!meetsLongReply(n, opts)) {
       st.longStreak = 0
       return 0
     }
@@ -978,10 +990,55 @@ export function createRhythm({ config, manager, logger, ownerIds = [], buildImag
     if (st.ignite < thrOf(cfg).calm) st.angerFired = false
     sample(st, now, true)
     logger.info?.(
-      `[dsh-qq] ${st.label} 连着第 ${st.longStreak} 次长回复（${longReplyCharsOf(body)} 字 ≥ ${opts.chars}），` +
+      `[dsh-qq] ${st.label} 连着第 ${st.longStreak} 次长回复（这一轮共 ${n} 字 ≥ ${opts.chars}），` +
         `烦躁度 +${step} → ${Math.round(st.ignite)}（${opts.curve}）`,
     )
     return step
+  }
+
+  /* ───────── 一轮的账（2026-11-04 晚） ───────── */
+
+  /**
+   * 一轮开始：开一本「本轮说了多少字」的账。
+   *
+   * 由 `inbound.runTurn` 在真正开跑时调（在 `manager.enqueue` 的回调里，不是外面：
+   * 排队等着的轮不能共用同一本账）。账挂在 `record` 上而不是 state 上 ——
+   * 一个群同一时刻只会跑一轮，但 record 的生命周期正好跟着会话走。
+   */
+  function beginTurnReply(record) {
+    if (!record) return
+    record.replyTurn = { chars: 0, pieces: 0 }
+  }
+
+  /** 轮内累加一次投递的字数。返回累计值（轮没开账就返回 0）。 */
+  function addTurnPiece(record, chars) {
+    const t = record?.replyTurn
+    if (!t) return 0
+    t.chars += Math.max(0, Math.round(Number(chars) || 0))
+    t.pieces += 1
+    return t.chars
+  }
+
+  /**
+   * 一轮结束：拿本轮累计字数判**一次**长文本。
+   *
+   * 三条不能省：
+   *   ① 一个字都没发（`pieces === 0`）→ 不判、不重置（只查了东西也跟着不算长话）；
+   *   ② 「按一轮累计」关着时，轮内每次投递已经各自判过了，这里不能再判第二次；
+   *   ③ 账一定要清掉 —— 否则下一轮会把上一轮的字数又算一遍。
+   *
+   * @returns {number} 这一轮加了多少分
+   */
+  function endTurnReply(record, now = Date.now()) {
+    const t = record?.replyTurn
+    if (record) record.replyTurn = null
+    if (!t || !t.pieces) return 0
+    if (!enabled()) return 0
+    if (groupsOnly() && record?.scope !== 'group') return 0
+    const st = states.get(keyOf(record))
+    if (!st) return 0
+    if (!perTurnOn(resolveConfig(st.peerId))) return 0
+    return noteLongReply(st, t.chars, now)
   }
 
   /**
@@ -1010,10 +1067,21 @@ export function createRhythm({ config, manager, logger, ownerIds = [], buildImag
     st.replies += 1
     // 长文本记账（2026-11-04）：自己说太长也算费神，连着说更要命。
     // 放在相位判断**之前** —— 无视里骂完那一句也照样该记账，只是它本来就短，
-    // 不可能是长文本，等于无副作用。
+    // 不可能触发长文本，等于无副作用。
+    //
+    // 2026-11-04 晚：**按轮累计**。`runTurn` 开过账（record.replyTurn）时这里只加字数，
+    // 等这一轮跑完由 endTurnReply 一次性判 —— 一轮里分段发也好、调几次 qq_send 也好，
+    // 加起来才算"这一轮说了多少"。没有轮容器的投递（冷窗回填、骂一句就走、主动开口）
+    // 仍然按单次判，它们本来就是说一句。
     try {
       const body = typeof said === 'string' ? said : String(said?.text ?? '')
-      if (body) noteLongReply(st, body, now)
+      if (body) {
+        const chars = longReplyCharsOf(body)
+        if (chars > 0) {
+          if (record?.replyTurn && perTurnOn(resolveConfig(st.peerId))) addTurnPiece(record, chars)
+          else noteLongReply(st, chars, now)
+        }
+      }
     } catch (err) {
       logger.warn?.(`[dsh-qq] ${st.label} 长文本记账失败（不影响热窗）: ${err?.message ?? err}`)
     }
@@ -1412,6 +1480,9 @@ export function createRhythm({ config, manager, logger, ownerIds = [], buildImag
     tick,
     gate,
     noteReply,
+    // 一轮的账：inbound.runTurn 在开跑时 begin、在 finally 里 end（2026-11-04 晚）
+    beginTurnReply,
+    endTurnReply,
     settleCold,
     forceIgnore,
     releaseIgnore,
