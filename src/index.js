@@ -4,7 +4,7 @@ import { ConfigSchema, listOf } from './config.js'
 import { OneBotClient } from './onebot/client.js'
 import { textSegments } from './onebot/segment.js'
 import { SessionManager } from './session.js'
-import { createInbound, historyLine } from './inbound.js'
+import { createInbound, historyLine, wakeInfoOf } from './inbound.js'
 import { appendChatLog } from './chatlog.js'
 import { SILENT_MARKER, personaLeaks, stripSilentMark } from './prompts.js'
 import { createOutbound } from './outbound.js'
@@ -572,8 +572,10 @@ const pin = createPin({ config, logger })
       }
       // 真开口了 → 重抽热窗（"每次回复后抽取热窗和冷窗"）。
       // 放在这里而不是 runTurn 结束：模型可能一句都没发出去（[SILENT]），那不算回复。
+      // 第三个参数是**这一轮实际说了多少字**：连着说长话要计入烦躁度（2026-11-04）。
+      // 传 spoken 而不是 chunks：拆分只是发送方式，字数是整段算的。
       try {
-        rhythm?.noteReply?.(record)
+        rhythm?.noteReply?.(record, Date.now(), spoken)
       } catch (err) {
         logger.warn?.(`[dsh-qq] ${record.label} 重抽热窗失败:`, err?.message ?? err)
       }
@@ -798,7 +800,7 @@ const pin = createPin({ config, logger })
 
   // ── 设置页接口：/api/dsh-qq/* ─────────────────────────────────────────────
   // DSH 设置界面里那一页（client.js）打的就是这几个口。
-  mountSettingsApi({ client, manager, personaRef, overridesRef, rhythm, groupConfig, faceEmbed })
+  mountSettingsApi({ client, manager, personaRef, overridesRef, rhythm, groupConfig, faceEmbed, wakeInfo: wakeInfoOf })
 
 
   ctx.on('dispose', () => {

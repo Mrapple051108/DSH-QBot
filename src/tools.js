@@ -24,6 +24,7 @@ import { appendFact, upsertGlossaryTerm } from './settings.js'
 import { auditOutbound } from './audit.js'
 import { lookupMeme } from './meme.js'
 import { downloadImage } from './inbound.js'
+import { safeToolOutput, conformToolOutput } from './shared/json-safe.js'
 
 /**
  * 工具直接发出去的文字也要过审计。
@@ -127,6 +128,33 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
   }
 
   /**
+   * 统一的注册口：返回值先过一遍 `json-safe` 再交给宿主。
+   *
+   * 2026-11-04 姐姐报的 `tool "qq_keep_face" returned invalid output:
+   * value is not lossless JSON` —— 根因是 `keepFace` 里有一句
+   * `reason: saved ? undefined : '写盘失败'`：对象里带 `undefined`，
+   * 序列化之后这个键就没了，"值"和"序列化之后的值"对不上，宿主直接判失败。
+   *
+   * 工具是插件里最容易被随手加的地方，这种写法迟早还有第二处，
+   * 所以在注册口兜一道：能修的修掉、修的时候喊一声，别让人对着红字发呆。
+   */
+  const register = (spec) => {
+    const run = spec?.execute
+    if (typeof run !== 'function') return tools.register(spec)
+    return tools.register({
+      ...spec,
+      async execute(...args) {
+        const value = await run.apply(spec, args)
+        const note = (path, what) => {
+          logger.warn?.(`[dsh-qq] 工具 ${spec.name} 的返回值 ${path} 不合规（${what}），已修正`)
+        }
+        const clean = safeToolOutput(value, note)
+        return conformToolOutput(clean, spec?.output?.schema, note)
+      },
+    })
+  }
+
+  /**
    * 工具发出去的东西也要记账（2026-10-27 姐姐让修的）。
    *
    * 以前只有正文走 send() 才写流水、进 history，用 qq_send / qq_reply 说的话等于「发出去就没了」：
@@ -148,14 +176,16 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     // 姐姐看到的「回复一句就重新抽热窗，现在直接不抽了」就是这条：
     // 那几轮它是在用工具说话，压根没走到 send。
     // 表情包/发图/发文件也走这里 —— 往外发了东西就算开口，一起来。
+    // 第三个参数给正文：长文本记账要用（2026-11-04）。表情包和文件没有正文，
+    // 传空串就好，那不算「说了长话」。
     try {
-      rhythm?.noteReply?.(record)
+      rhythm?.noteReply?.(record, Date.now(), said)
     } catch (err) {
       logger?.warn?.(`工具外发后重抽热窗失败：${err?.message ?? err}`)
     }
   }
 
-  tools.register({
+  register({
     name: 'qq_facts',
     description:
       '读写自己的事实卡（跨压缩还记得的关键事实：姐姐怎么称呼、作息、禁忌、正在做的事）。' +
@@ -202,7 +232,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     },
   })
 
-  tools.register({
+  register({
     name: 'qq_glossary',
     description:
       '往某个群的群词典里补一条「弄明白了的说法」。群里的黑话、缩写、谁是谁——弄懂了就记下来，下回不用重新问。' +
@@ -269,7 +299,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
       return abs
     }
 
-    tools.register({
+    register({
       name: 'qq_memo',
       description:
         '读写全家共用的那座记忆区（本地记忆区/）。注意：你自己的 write 只能落在本会话目录里，' +
@@ -349,7 +379,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     })
   }
 
-  tools.register({
+  register({
     name: 'qq_meme',
     description:
       '查一个网络梗 / 黑话 / 缩写的出处和用法。手边有一份 6668 条的梗词库快照（cnmeme.wiki，2026-10-26 建库），毫秒级。' +
@@ -402,7 +432,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     },
   })
 
-  tools.register({
+  register({
     name: 'qq_pin',
     description:
       '你自己的便签（话头，不是待办清单）：聊长了容易忘「上回说到哪儿、哪句话还没接上」，就记在这上面。' +
@@ -461,7 +491,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     },
   })
 
-  tools.register({
+  register({
     name: 'qq_ignore',
     description:
       '无视冷窗：你自己决定「这会儿不想理这个群」。' +
@@ -550,7 +580,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     },
   })
 
-  tools.register({
+  register({
     name: 'qq_poke',
     description: POKE_DESC,
     parameters: {
@@ -594,7 +624,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     },
   })
 
-  tools.register({
+  register({
     name: 'qq_react',
     description: REACT_DESC,
     parameters: {
@@ -637,7 +667,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     },
   })
 
-  tools.register({
+  register({
     name: 'qq_images',
     description: IMAGES_DESC,
     parameters: {
@@ -724,7 +754,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     },
   })
 
-  tools.register({
+  register({
     name: 'qq_like',
     description: LIKE_DESC,
     parameters: {
@@ -763,7 +793,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     },
   })
 
-  tools.register({
+  register({
     name: 'qq_send_image',
     description: IMAGE_DESC,
     parameters: {
@@ -814,7 +844,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     },
   })
 
-  tools.register({
+  register({
     name: 'qq_face',
     description: FACE_DESC,
     parameters: {
@@ -856,7 +886,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     },
   })
 
-  tools.register({
+  register({
     name: 'qq_send_file',
     description: FILE_DESC,
     parameters: {
@@ -907,7 +937,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     },
   })
 
-  tools.register({
+  register({
     name: 'qq_recall',
     description: RECALL_DESC,
     parameters: {
@@ -944,7 +974,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     },
   })
 
-  tools.register({
+  register({
     name: 'qq_reply',
     description:
       '引用某条消息再发一句话（QQ 的「回复」，气泡上会带一条原文引用）。' +
@@ -1004,7 +1034,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     },
   })
 
-  tools.register({
+  register({
     name: 'qq_send',
     description:
       '发一条普通消息（不带引用）。' +
@@ -1085,10 +1115,10 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     },
   })
 
-  tools.register({
+  register({
     name: 'qq_keep_face',
     description:
-      '把一张本地图片收进「表情包收藏」，以后就能用 qq_mface 随机发出来。' +
+      '把一张本地图片收进「表情包收藏」，以后就能用 qq_mface 按意思找出来发。' +
       '**主人明确说「收下这张」「存起来」「收藏一下」时必须收**，不用管下面那些门槛。' +
       '自己判断时：带字的表情包、夸张反应图、梗图值得收；普通照片、聊天截图、风景、随手拍的实物图不收。' +
       '收之前先 read_image 看一眼，确认是表情包再收。',
@@ -1121,6 +1151,8 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
           ok: { type: 'boolean' },
           added: { type: 'boolean' },
           total: { type: 'integer' },
+          /** 这次有没有算上语义向量（false = 嵌入服务没开，退回关键词匹配，图照样收下了） */
+          vec: { type: 'boolean' },
           reason: { type: 'string' },
         },
         required: ['ok'],
@@ -1147,7 +1179,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     },
   })
 
-  tools.register({
+  register({
     name: 'qq_faces',
     description:
       '排查用：看一眼「表情包收藏」里有哪些名字（+ 数量）。' +
@@ -1194,23 +1226,19 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
     },
   })
 
-  tools.register({
+  register({
     name: 'qq_mface',
     description:
-      '发一张表情包（收藏里的图，或 QQ 商城表情）。' +
+      '发一张表情包。' +
       '**首选写 query**：用你自己的话说清「想表达什么」（「无语到笑」「委屈求安慰」「得意」「晚安」），' +
       '系统按意思找最贴的一张 —— 够贴就发，不够贴会回你 3 张最接近的描述，那时换个说法或者这次别发。' +
       '收藏里没有名单可看，所以不要猜名字；只有在你确实知道某张的名字时才用 summary。' +
       '不写 query 也不写 summary 就从收藏里随机挑一张（不推荐，随机挑的多半不搭）。' +
-      '也可以给 emoji_id + emoji_package_id 指定某个商城表情。' +
       '⚠️ 有节奏限制：两张之间至少隔一会儿、一小时有上限，超了会被直接拒绝。' +
       '表情是点缀，不是标点符号 —— 正经说话就好好说，别每句都配一张。',
     parameters: {
       type: 'object',
       properties: {
-        emoji_id: { type: 'string', description: '表情 id（指定商城表情时才用），例如 96e2cc34b1a4d3ee6b2b' },
-        emoji_package_id: { type: 'string', description: '表情包 id（可空，兜底 CDN 要用）' },
-        key: { type: 'string', description: '有些版本需要 key，可空' },
         query: {
           type: 'string',
           description:
@@ -1452,7 +1480,7 @@ export function registerTools(ctx, { client, manager, config, logger, pin, wake,
   // 2026-10-26 姐姐：「老三还是看不到群聊」。私聊和群是两个会话，私聊里确实看不见群里的字。
   // 前辈 qq-bridge 也是 group:id / private:id 分开的，它给的办法是「AI 想看就自己取」——
   // 所以这里不是把群聊硬塞进私聊，而是给一只「眼睛」：想看看群里刚才聊了什么，自己调。
-  tools.register({
+  register({
     name: 'qq_group_history',
     description:
       '读某个群最近聊了什么（从落盘的聊天记录里取原话，含别人说的话）。' +

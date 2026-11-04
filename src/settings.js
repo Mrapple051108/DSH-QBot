@@ -26,6 +26,8 @@ import { GROUP_OVERRIDABLE, canOverridePerGroup, readThresholds } from './group-
 import {
   vectorCoverage,
   facesSnapshot,
+  facesSnapshotWithDedupe,
+  dedupeFaces,
   updateFace,
   removeFace,
   addFaceFromDataUrl,
@@ -33,6 +35,7 @@ import {
   FACE_UPLOAD_MAX_MB,
 } from './faces.js'
 import { groupFieldsBySection, FIELD_BY_KEY } from './group-fields.js'
+import { needMention } from './shared/mention.js'
 import {
   ensureKeyPair,
   resetKeyPair,
@@ -147,6 +150,12 @@ export const OVERRIDABLE = [
   'ignoreCurve',
   'ignoreBehaviorMode',
   'ignorePunishRise',
+  // 长文本回复惩罚（2026-11-04）
+  'longReplyPenalty',
+  'longReplyChars',
+  'longReplyBase',
+  'longReplyCurve',
+  'longReplyGamma',
   'angerPromptYield',
   'angerPromptFight',
   'escapePromptYield',
@@ -160,6 +169,8 @@ export const OVERRIDABLE = [
   'faceEmbedEnabled',
   'faceEmbedThreshold',
   'faceEmbedTopK',
+  'faceDedupeEnabled',
+  'faceDedupeThreshold',
   // 每群覆盖表：{ "<群号>": { key: value } }，在 sanitizeOverrides 里单独处理
   'groupOverrides',
   'ignoreRedundancyWeight',
@@ -461,7 +472,7 @@ export function settingsInfo(ctx, logger) {
  * @param {object} opts.overridesRef `{ current: {} }`，设置页存下来的覆盖
  * @returns {boolean} 是否挂上
  */
-export function installSettingsApi({ ctx, webServer: injectedWebServer, config, logger, client, manager, personaRef, overridesRef, rhythm, groupConfig, faceEmbed }) {
+export function installSettingsApi({ ctx, webServer: injectedWebServer, config, logger, client, manager, personaRef, overridesRef, rhythm, groupConfig, faceEmbed, wakeInfo }) {
   // 自证：这次到底有没有把路由挂上（排查「设置页 404」时不用靠猜）
   const noteApiState = (ok, detail) => {
     try {
@@ -601,6 +612,14 @@ export function installSettingsApi({ ctx, webServer: injectedWebServer, config, 
         // 2026-11-02：阈值按**这个群自己的**配置算。以前页面画的是全局那条线，
         // 改了某个群的阈值，图上的线纹丝不动 —— 姐姐说的"阈值水位线没有刷新"就是这个。
         const lv = readThresholds(groupConfig?.for(peerId) ?? config)
+        // 对话窗口（2026-11-04 姐姐要的）：面板要显示「还剩多久 / 已到点」，
+        // 曲线要按「这段在窗口里吗」决定实线还是虚线。数据由 inbound.wakeInfoOf 给。
+        let wi = null
+        try {
+          wi = scope === 'group' && typeof wakeInfo === 'function' ? wakeInfo(peerId) : null
+        } catch {
+          wi = null
+        }
         return {
           ...s,
           sessionId: byPeer.get(s.key) ?? '',
@@ -609,6 +628,12 @@ export function installSettingsApi({ ctx, webServer: injectedWebServer, config, 
           // 情绪档位（2026-11-03）：面板上直接看「她现在什么心情」，别让人对着数字猜
           mood: moodOf(s, lv),
           ...lv,
+          // 对话窗口：until = 最晚一个窗口的到期时间，ranges = 开着的时段（画虚线要用）
+          wakeUntil: Number(wi?.until) || 0,
+          wakeLive: Boolean(wi?.live),
+          wakeRanges: Array.isArray(wi?.ranges) ? wi.ranges : [],
+          // 这个群是不是「必须 @ 才接话」——不是的话，窗口概念对它没意义，别乱画虚线
+          mustAt: scope === 'group' ? needMention(groupConfig?.for(peerId) ?? config, peerId) : false,
         }
       })
       return sendJson(res, 200, {
@@ -727,7 +752,8 @@ export function installSettingsApi({ ctx, webServer: injectedWebServer, config, 
     if (req.method === 'GET' && path === '/api/dsh-qq/faces') {
       let snap = { dir: '', file: '', total: 0, withVec: 0, list: [] }
       try {
-        snap = facesSnapshot(config)
+        // 2026-11-04：带上查重标记（黄圈）。扫描在子线程里做，慢的是它、不是这个接口。
+        snap = await facesSnapshotWithDedupe(config, { logger })
       } catch (err) {
         return sendJson(res, 500, { ok: false, error: `读收藏失败：${err?.message ?? err}` })
       }
@@ -755,6 +781,14 @@ export function installSettingsApi({ ctx, webServer: injectedWebServer, config, 
         if (action === 'add') {
           const r = await addFaceFromDataUrl(config, body, faceEmbed)
           return sendJson(res, r.ok ? 200 : 400, { ok: r.ok, ...r })
+        }
+        // 一键去重（2026-11-04）：每个"像"的簇留最早那张，删掉后来的，连文件一起删
+        if (action === 'dedupe') {
+          const r = await dedupeFaces(config, { logger })
+          if (r.ok) {
+            logger.info?.(`[dsh-qq] 表情包去重：删掉 ${r.removed} 条，剩 ${r.total} 条`)
+          }
+          return sendJson(res, r.ok ? 200 : 500, { ok: r.ok, ...r })
         }
         return sendJson(res, 400, { ok: false, error: `未知操作 ${action || '(空)'}` })
       } catch (err) {

@@ -228,6 +228,27 @@ function groupUntilAt(groupId) {
   return max
 }
 
+/**
+ * 「对话窗口」的开 / 关历史 —— 只给可视化用（2026-11-04 姐姐要的）。
+ *
+ * 她原话：「@ 之后不是会有一个计时器吗？到点以后应该在状态面板上显示，
+ * 以及曲线也变成虚线」。
+ *
+ * 账本和区间换算都搬到 `shared/wake-spans.js` 了（纯模块，能单独测）；
+ * 这里只负责把「窗口什么时候开、什么时候关」这两个时刻记下来。
+ */
+export function wakeInfoOf(groupId, now = Date.now()) {
+  const gid = String(groupId)
+  const until = groupUntilAt(gid)
+  const list = spansOf(gid)
+  return {
+    until,
+    live: until > now,
+    ranges: spansToRanges(list, until, now),
+    spans: list.slice(-40),
+  }
+}
+
 /** 把该群里已经过期的窗口清掉，返回还剩几个活的。 */
 function pruneGroupWindows(groupId, now = Date.now()) {
   const prefix = `${groupId}:`
@@ -256,6 +277,8 @@ function armWakeTimer(config, groupId) {
     // 这期间又被 @ 了 → 那边重新 arm 过，这里什么都别做
     if (groupUntilAt(groupId) > Date.now()) return
     pruneGroupWindows(groupId)
+    // 可视化用：这一刻关窗（曲线上从这儿开始画虚线）
+    noteWakeSpan(groupId, 'close')
     try {
       onWakeExpire?.(groupId)
     } catch {
@@ -273,7 +296,10 @@ function closeWake(config, groupId, userId) {
   groupReplies.delete(key)
   const alive = pruneGroupWindows(groupId)
   if (alive > 0) armWakeTimer(config, groupId)
-  else clearWakeTimer(groupId)
+  else {
+    clearWakeTimer(groupId)
+    noteWakeSpan(groupId, 'close')
+  }
 }
 
 /**
@@ -302,6 +328,8 @@ function refreshWake(config, groupId, userId) {
   if (!shouldRenewWindow({ openUntil, now, renew: config.groupWakeRenew })) return false
   if (isNewWindow) groupReplies.set(key, { startedAt: now, count: 0 })
   groupWakeUntil.set(key, now + ms)
+  // 可视化用：窗口（重新）开了 —— 从这一刻起它在群里可以主动开口
+  noteWakeSpan(groupId, 'open', now)
   // 到点收尾：这一段固定时长走完，让它自己说一句「我要去休息了」。
   // ⚠️ 定时器按**群**排，一个群只有一个（见 armWakeTimer 上面那段注释）。
   armWakeTimer(config, groupId)
@@ -437,6 +465,14 @@ export { pushHistory }
  */
 import { keepBacklog, drainBacklog, drainPending } from './shared/backlog.js'
 export { keepBacklog, drainBacklog, drainPending }
+
+/**
+ * 热窗收尾的判定与文案（2026-11-04）。纯函数放在 shared 里，
+ * 一是这里能单独测「窗口关没关、该交哪些」，二是这段判定被改坏过一次（1.3.2）。
+ */
+import { hotEndStanding, hotEndLines, hotEndText, farewellText } from './shared/hot-end.js'
+/** 对话窗口的开 / 关账本（面板要显示「到点」、曲线要画虚线）。 */
+import { noteWakeSpan, spansOf, spansToRanges } from './shared/wake-spans.js'
 
 /**
  * 同一条消息只处理一次。见 shared/dedupe.js 的注释。
@@ -741,21 +777,25 @@ export function createInbound({ ctx, config, manager, logger, client, send, appr
         logger.warn?.(`[dsh-qq] 窗口到点取会话失败 ${groupId}: ${err?.message ?? err}`)
         return
       }
-      // 这期间被跳过 / 压住、还没交出去的话，一并给它 —— 「回最后一条」就是这些
-      const pending = drainBacklog(groupId).slice(-8)
-      const text = [
-        '[你跟这个群说话的那一段到点了]',
-        pending.length ? '[这期间还有几句你还没回：]' : '',
-        ...pending,
-        '',
-        '现在收个尾：说一句你要去忙 / 休息了，有事再 @ 你。一句就够，按你自己的语气来，',
-        '别解释、别总结刚才聊了啥。',
-        '不想说就回 [SILENT] —— 那就悄悄收摊，不吭声。',
-      ]
-        .filter(Boolean)
-        .join('\n')
-      logger.info?.(`[dsh-qq] 群 ${groupId} 对话窗口到期，让它收个尾（带回 ${pending.length} 条）`)
+      // 2026-11-04：以前这里把缓冲当注脚塞在最前面，主体只叫它「说句再见」，
+      // 于是它常常只念了告别，那几句就再也没人回 —— 姐姐说的「只叫它说再见，
+      // 而不带缓冲区消息」。现在顺序钉死：**先回话，再收尾**（文案见 farewellText）。
+      const { pending } = drainPending(groupId)
+      const contextLines = drainBacklog(groupId)
+      const lines = hotEndLines({
+        pending,
+        context: contextLines,
+        maxContext: Math.max(1, Number(config.historyLimit) || 16),
+      })
+      const text = farewellText({ pending: lines.pending, context: lines.context })
+      logger.info?.(
+        `[dsh-qq] 群 ${groupId} 对话窗口到期：先回 ${lines.pending.length} 条该回的 + ` +
+          `${lines.context.length} 条上下文，再收尾`,
+      )
       manager.enqueue(record, async () => {
+        // 收尾这一轮说完「我去忙了」，不该把热窗又续上（姐姐观察到的「告别会触发热窗，
+        // 又进入计时周期」就是这个）。标记在这儿挂上，`rhythm.noteReply` 看到就跳过。
+        record.farewellTurn = true
         try {
           record.agent.followup(
             createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
@@ -769,6 +809,14 @@ export function createInbound({ ctx, config, manager, logger, client, send, appr
           ])
         } catch (err) {
           logger.warn?.(`[dsh-qq] 收尾投递失败 ${groupId}: ${err?.message ?? err}`)
+        } finally {
+          record.farewellTurn = false
+          // 说完就收摊：直接进冷窗，别停在热窗里让下一条消息接着聊
+          try {
+            rhythm?.settleCold?.(record)
+          } catch (err) {
+            logger.debug?.(`[dsh-qq] 收尾后切冷窗失败 ${groupId}: ${err?.message ?? err}`)
+          }
         }
       })
     } catch (err) {
@@ -784,27 +832,57 @@ export function createInbound({ ctx, config, manager, logger, client, send, appr
   /**
    * 热窗到点：手里的缓冲先交出去，别让它们烂到冷窗里等十几分钟。
    *
-   * 2026-11-02 姐姐观察到的：「有概率热窗期间有消息但被回复延时卡住直接进冷窗，
+   * 姐姐 2026-11-02 原话：「有概率热窗期间有消息但被回复延时卡住直接进冷窗，
    * 应该在切换时缓冲区有消息就全传给智能体，没有就进冷窗」。
    *
-   * 「回复延时」是这条链上的好几道闸 —— 合并窗口、回复间隔、限速 —— 任何一道
-   * 把消息压住的时候碰巧热窗到期，那几句就跟着进冷窗了，下次见到是十分钟后。
-   * 这里把两道缓冲（inbound 的 backlog、record.history）一并取走，凑成一轮交出去。
+   * 2026-11-04 她报的两个毛病，都是这一段被改坏后的连锁反应：
    *
-   * 缓冲是空的就什么都不做 —— 安静进冷窗本来就是正常情况，不该凭空多说一句。
+   *   ①「热窗换到冷窗时没有发送消息，原本是有热窗换冷窗会把缓冲区的消息
+   *      发给它的，回了就继续热窗，选择不回就切冷窗」
+   *      → 1.3.2 只交 `pending`，可热窗里根本没有间隔闸（`skipGap` 让它失效）、
+   *        额度也默认不限，`pending` 永远是空的，于是每次都在第一行 return。
+   *
+   *   ②「抽中的时间没人说话，到点以后却没有收到消息，然后一直顶到上限才回」
+   *      → 同一个原因：收尾没发生，那几句就躺在冷窗里，等冷窗到期（6~15 分钟）
+   *        才被 `flushKey('cold')` 端出来，看起来就是"憋到上限才回"。
+   *
+   * 现在的判据换成**「它现在有没有开口的资格」**（判据在 shared/hot-end.js）：
+   *   · 必须 @ 才接话的群：只有 @ 开出来的窗口**还开着**才交 —— 窗口早关了还冒出来
+   *     接话，正是 1.3.2 要修的那次事故，这条底线没丢；
+   *   · 不用 @ 的群：本来就允许它主动接话，照交。
+   *
+   * 交出去的内容分两种：`pending`（冲它来的）和 `backlog` 剩下的（别人在聊什么）。
+   * 剩下的就交给它自己：接了 → `noteReply` 重抽热窗，接着续上；
+   * 只回 [SILENT] → 什么都不发，安静进冷窗。这正是姐姐要的那两段语义。
    */
   async function flushBuffersOnHotEnd({ scope, peerId, label }) {
     if (String(scope) !== 'group') return
-    // ⚠️ 只取「该回却被压住」的那几条（见 drainPending 的注释）。
-    //    以前这里 drainBacklog 整桶端出去，结果没 @ 我的闲话也被当成
-    //    「你还没回的话」，热窗一到就顺口接了一嘴 —— 窗口早关了还在说话。
+    const gcfg = cfgFor?.(peerId) ?? config
+    // ① 先看资格。窗口已经关了 → 一句都别交，也别白建会话。
+    const standing = hotEndStanding({
+      needMention: needMention(gcfg, peerId),
+      wakeUntil: groupUntilAt(peerId),
+    })
+    if (!standing.speak) {
+      logger.debug?.(
+        `[dsh-qq] ${label} 热窗结束，但对话窗口早就关了（必须 @ 的群），不开口，直接进冷窗`,
+      )
+      return
+    }
+    // ② 两个账一起取：pending = 该回却被压住的；剩下的 = 这期间别人说的话（上下文）。
+    //    取走就空（消费型），不会下一轮再喂一遍。
     const { pending } = drainPending(peerId)
-    // 没有「被我压住的话」→ 收尾什么都不用做，连会话都别去取。
-    // 以前这儿先 obtain 再判空，于是每组新状态的第一轮热窗都白建一次会话
-    // （宿主重启后群里第一句话必然触发一次）—— 日志里那串「会话就绪」就是它。
-    // record.history 万一有东西也不怕：那是消费型的，下次正常投递时会一起端出去。
-    if (pending.length === 0) {
-      logger.debug?.(`[dsh-qq] ${label} 热窗结束，没有压着的话，直接进冷窗`)
+    const contextLines = drainBacklog(peerId)
+    const lines = hotEndLines({
+      pending,
+      context: contextLines,
+      maxContext: Math.max(1, Number(config.historyLimit) || 16),
+    })
+    // ③ 真的是空的 → 安静进冷窗。这是正常情况（没人说话），不该凭空多说一句。
+    //    以前这儿先 obtain 再判空，于是每个群新状态的第一轮热窗都白建一次会话
+    //    （宿主重启后群里第一句话必然触发一次）—— 日志里那串「会话就绪」就是它。
+    if (lines.total === 0) {
+      logger.debug?.(`[dsh-qq] ${label} 热窗结束，缓冲是空的，直接进冷窗`)
       return
     }
     let record = null
@@ -816,19 +894,16 @@ export function createInbound({ ctx, config, manager, logger, client, send, appr
     }
     if (!record) return
     // history 是消费型缓冲：取走 = 这一轮已经交给它了，不会下一轮再来一遍
-    const kept = Array.isArray(record.history) ? takeHistory(record) : []
-    const lines = compactLines([...pending, ...kept])
-    if (lines.length === 0) {
-      logger.debug?.(`[dsh-qq] ${label} 热窗结束，缓冲是空的，直接进冷窗`)
-      return
-    }
-    const text = [
-      '[这个群的热窗到点了，但刚刚还有几句没交到你手上]',
-      ...lines.map((line) => `- ${line}`),
-      '',
-      '现在一次性看完：想接就接一句，没什么要说的就回 [SILENT]。',
-    ].join('\n')
-    logger.info?.(`[dsh-qq] ${label} 热窗结束，把攒着的 ${lines.length} 条一次性交出去`)
+    const kept = Array.isArray(record.history) ? compactLines(takeHistory(record)) : []
+    const text = hotEndText({
+      label,
+      pending: lines.pending,
+      context: [...lines.context, ...kept],
+    })
+    logger.info?.(
+      `[dsh-qq] ${label} 热窗结束，交出去 ${lines.pending.length} 条该回的 + ` +
+        `${lines.context.length + kept.length} 条上下文（${standing.reason === 'free' ? '这个群不用 @' : '对话窗口还开着'}），让它自己决定接不接`,
+    )
     manager.enqueue(record, async () => {
       try {
         record.agent.followup(
@@ -1760,54 +1835,84 @@ export function createInbound({ ctx, config, manager, logger, client, send, appr
       const key = `${scope}:${peerId}`
       let batch = mergeBatches.get(key)
       if (!batch) {
-        batch = { bodies: [], images: [], meta: null, timer: null, firstAt: Date.now() }
+        batch = { bodies: [], images: [], meta: null, timer: null, firstAt: Date.now(), lastFrom: '' }
         mergeBatches.set(key, batch)
       }
+      // 一直有人在说话也别无限等：从这一批的第一条算起，最长 groupMergeMaxMs 就得发。
+      const hardMs = Math.max(windowMs, Number(config.groupMergeMaxMs ?? 30000))
+      // 2026-11-04：**只有同一个人接着补话才续窗**。
+      // 以前每条消息都清掉旧定时器重设，于是群里只要一直有人说话，这一轮就永远
+      // 排不到窗口，得顶到 `groupMergeMaxMs`（默认 30 秒）才发出去 ——
+      // 姐姐的原话就是「一直顶到我设置的回复上限才回」。
+      // 现在：同一个人把一句话拆成三段 → 续窗（还是等等他说完）；
+      //       别人插一句 → 只并进这一批，**不动原来的截止时间**。
+      const from = String(senderId ?? '')
+      const sameSender = batch.bodies.length > 0 && from && from === String(batch.lastFrom ?? '')
+      batch.lastFrom = from || batch.lastFrom
       batch.bodies.push(body)
       if (imagePaths.length > 0) batch.images.push(...imagePaths)
       // 用最新的 record（上下文换过会话的话，投给新那个）
       batch.meta = { record, label, peerId, isGroup, client }
 
       const fire = () => {
-        // 队列里还有活（上一轮还在跑）→ 现在投出去也只是排在后面，屏幕上就是
-        // 「接话节奏显示 4 秒，4 秒到了没动静」。
-        // 2026-11-03 姐姐报的就是这个：先慢后快那条曲线下烦躁度低 → 窗口短（4 秒），
-        // 最容易撞上「上一轮还没跑完」，于是 4 秒变成「4 秒 + 排上一轮」。
-        // 改法：窗口到点时若队列忙，把这一批**留着**，每 300ms 再看一眼，
-        // 等队列空了立刻投 —— 等待时间因此真的等于窗口 + 一点点。
-        const live = batch.meta?.record
-        if (live?.busy > 0) {
-          const waitedMore = Date.now() - batch.firstAt
-          // 兜底：最多再多等一分钟，别因为队列一直忙就把这批话吞了
-          if (waitedMore < hardMs + 60_000) {
-            if (batch.timer) clearTimeout(batch.timer)
-            batch.timer = setTimeout(fire, 300)
-            logger.debug?.(`[dsh-qq] ${label} 窗口到了但上一轮还没跑完，先攒着（已等 ${Math.round(waitedMore / 1000)}s）`)
-            return
+        try {
+          // 队列里还有活（上一轮还在跑）→ 现在投出去也只是排在后面，屏幕上就是
+          // 「接话节奏显示 4 秒，4 秒到了没动静」。
+          // 2026-11-03 姐姐报的就是这个：先慢后快那条曲线下烦躁度低 → 窗口短（4 秒），
+          // 最容易撞上「上一轮还没跑完」，于是 4 秒变成「4 秒 + 排上一轮」。
+          // 改法：窗口到点时若队列忙，把这一批**留着**，每 300ms 再看一眼，
+          // 等队列空了立刻投 —— 等待时间因此真的等于窗口 + 一点点。
+          const live = batch.meta?.record
+          if (live?.busy > 0) {
+            const waitedMore = Date.now() - batch.firstAt
+            // 兜底：最多再多等一分钟，别因为队列一直忙就把这批话吞了
+            if (waitedMore < hardMs + 60_000) {
+              if (batch.timer) clearTimeout(batch.timer)
+              batch.timer = setTimeout(fire, 300)
+              logger.debug?.(`[dsh-qq] ${label} 窗口到了但上一轮还没跑完，先攒着（已等 ${Math.round(waitedMore / 1000)}s）`)
+              return
+            }
+            logger.warn?.(`[dsh-qq] ${label} 队列忙了太久，先把这一批投进去排队`)
           }
-          logger.warn?.(`[dsh-qq] ${label} 队列忙了太久，先把这一批投进去排队`)
+          mergeBatches.delete(key)
+          if (batch.timer) clearTimeout(batch.timer)
+          const count = batch.bodies.length
+          const spent = Date.now() - batch.firstAt
+          if (count > 1) logger.info?.(`[dsh-qq] ${label} 连发 ${count} 条，合并成一轮回`)
+          // 真的等超了（队列忙 / 一直被顶到上限）就留一行，别让人对着"说 4 秒、40 秒才回"猜
+          if (spent > windowMs + 1500) {
+            logger.info?.(
+              `[dsh-qq] ${label} 这一轮实际等了 ${(spent / 1000).toFixed(1)}s（窗口 ${Math.round(windowMs / 1000)}s，硬上限 ${Math.round(hardMs / 1000)}s）`,
+            )
+          }
+          const faceRule = faceCollectRule(config)
+          // 规矩合并成一份，别每条念一遍（姐姐：「在最后一行留一个就行」）
+          const mergedBody = mergeBodies(batch.bodies, { imageCount: batch.images.length, faceRule })
+          const cued = withFaceCue(mergedBody, { peerId: batch.meta?.peerId, isGroup: batch.meta?.isGroup })
+          void buildImageParts(batch.images).then((imageParts) =>
+            runTurn({ ...batch.meta, body: cued, imageParts, maxTurnMs }),
+          )
+        } catch (err) {
+          // 2026-11-04：以前 fire 里任何一步抛错都是"消息凭空消失"——
+          // batch 已经删了、错误进了 unhandled，群里就是没人回。
+          logger.warn?.(`[dsh-qq] ${label} 合并投递失败（这一批 ${batch.bodies.length} 条没能发出去）: ${err?.message ?? err}`)
         }
-        mergeBatches.delete(key)
-        if (batch.timer) clearTimeout(batch.timer)
-        const count = batch.bodies.length
-        if (count > 1) logger.info?.(`[dsh-qq] ${label} 连发 ${count} 条，合并成一轮回`)
-        const faceRule = faceCollectRule(config)
-        // 规矩合并成一份，别每条念一遍（姐姐：「在最后一行留一个就行」）
-        const mergedBody = mergeBodies(batch.bodies, { imageCount: batch.images.length, faceRule })
-        const cued = withFaceCue(mergedBody, { peerId: batch.meta?.peerId, isGroup: batch.meta?.isGroup })
-        void buildImageParts(batch.images).then((imageParts) =>
-          runTurn({ ...batch.meta, body: cued, imageParts, maxTurnMs }),
-        )
       }
 
-      if (batch.timer) clearTimeout(batch.timer)
-      // 一直有人在说话也别无限等：从这一批的第一条算起，最长 groupMergeMaxMs 就得发。
-      const hardMs = Math.max(windowMs, Number(config.groupMergeMaxMs ?? 30000))
-      const waited = Date.now() - batch.firstAt
-      batch.timer = setTimeout(fire, Math.max(400, Math.min(windowMs, hardMs - waited)))
-      logger.debug?.(
-        `[dsh-qq] ${label} 这一轮等 ${Math.min(windowMs, hardMs - waited)}ms 再回（烦躁度 ${Math.round(rhythm?.igniteOf?.(scope, peerId) ?? 0)}）`,
-      )
+      if (!batch.timer || sameSender) {
+        if (batch.timer) clearTimeout(batch.timer)
+        const waited = Date.now() - batch.firstAt
+        const delay = Math.max(400, Math.min(windowMs, hardMs - waited))
+        batch.timer = setTimeout(fire, delay)
+        logger.debug?.(
+          `[dsh-qq] ${label} 这一轮等 ${delay}ms 再回（烦躁度 ${Math.round(rhythm?.igniteOf?.(scope, peerId) ?? 0)}${sameSender ? '，同一个人补话续窗' : ''}）`,
+        )
+      } else {
+        // 别人插话：并进这一批，但不动截止时间 —— 不然群里一热闹就永远等不到窗口
+        logger.debug?.(
+          `[dsh-qq] ${label} 别人也说了话，并进这一批但不续窗（还剩 ${Math.max(0, Math.round(hardMs - (Date.now() - batch.firstAt)))}ms 到硬上限）`,
+        )
+      }
       return
     }
 

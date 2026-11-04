@@ -21,6 +21,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { vecToB64, b64ToVec, cosine } from './face-embed.js'
+import { scanInWorker } from './face-dedupe.js'
 
 const MAX_KEEP = 200
 
@@ -136,21 +137,13 @@ export async function keepFace(config, input, embed) {
 
   const list = load(config)
 
-  // 先搬进表情包目录再登记：只记缓存路径的话，缓存一清就全废
-  let stored
-  try {
-    stored = storeImage(config, file)
-  } catch (err) {
-    return { ok: false, added: false, total: list.length, reason: `复制到表情包目录失败：${err?.message ?? err}` }
-  }
-
   const tags = Array.isArray(input?.tags)
     ? input.tags.map((t) => String(t ?? '').trim()).filter(Boolean).slice(0, 8)
     : []
 
   const entry = {
     kind: 'image',
-    path: stored,
+    path: '',
     summary: String(input?.summary ?? '').trim(),
     ...(tags.length > 0 ? { tags } : {}),
     at: new Date().toISOString(),
@@ -174,6 +167,29 @@ export async function keepFace(config, input, embed) {
     }
   }
 
+  // 2026-11-04：**先查重，再落盘**。顺序很重要 —— 落盘之后再决定丢弃，
+  // `表情包/` 里就会留一张谁也查不到的孤儿图。
+  //   ① 开了「添加时自动丢弃重复」：太像就直接不存，**也不告诉模型是重复**
+  //      （工具那边只会显示「这个之前就收过了」，不解释原因）；
+  //   ② 没开：照存，界面上的黄圈由列表接口现扫现标（不在 JSON 里留状态，
+  //      免得阈值一改就全对不上）。
+  let near = null
+  if (entry.vec) {
+    near = await nearestDuplicate(config, entry.vec, { excludePath: file })
+    if (near && dedupeAutoOn(config)) {
+      return { ok: true, added: false, total: list.length, vec: true }
+    }
+  }
+
+  // 搬进表情包目录再登记：只记缓存路径的话，缓存一清就全废
+  let stored
+  try {
+    stored = storeImage(config, file)
+  } catch (err) {
+    return { ok: false, added: false, total: list.length, reason: `复制到表情包目录失败：${err?.message ?? err}` }
+  }
+  entry.path = stored
+
   const k = imageKey(entry)
   const existing = list.find((f) => f.kind === 'image' && imageKey(f) === k)
   if (existing) {
@@ -189,7 +205,9 @@ export async function keepFace(config, input, embed) {
         added: false,
         total: list.length,
         vec: true,
-        reason: saved ? undefined : '写盘失败',
+        // 2026-11-04：别写「reason: undefined」—— 宿主判「无损 JSON」会直接报
+        // value is not lossless JSON（工具那边已经有兜底，这里从源头就不写）
+        ...(saved ? {} : { reason: '写盘失败' }),
       }
     }
     return { ok: true, added: false, total: list.length, vec: Boolean(existing.vec) }
@@ -202,8 +220,116 @@ export async function keepFace(config, input, embed) {
     added: saved,
     total: saved ? list.length : list.length - 1,
     vec: Boolean(entry.vec),
-    reason: saved ? undefined : '写盘失败',
+    ...(saved ? {} : { reason: '写盘失败' }),
   }
+}
+
+/**
+ * 收藏里的查重阈值（0.80~0.999，默认 0.95）。
+ * 「标签词向量太像」= 两句话说的是同一件事（同一张图换个描述、同一个梗的两张图）。
+ */
+export function dedupeThresholdOf(config) {
+  const raw = Number(config?.faceDedupeThreshold)
+  const n = Number.isFinite(raw) && raw > 0 ? raw : 0.95
+  return Math.min(0.999, Math.max(0.8, n))
+}
+
+/** 「添加时自动丢弃重复」开关。默认关 —— 默认行为应该是不动别人的收藏。 */
+export function dedupeAutoOn(config) {
+  return config?.faceDedupeEnabled === true
+}
+
+/**
+ * 跟收藏里已有的向量比一遍，找出最像的那一条（子线程里算）。
+ *
+ * @param {string} vecB64 候选向量（base64）
+ * @param {{excludePath?:string, logger?:object}} [opts]
+ * @returns {Promise<{id:string, score:number}|null>}
+ */
+export async function nearestDuplicate(config, vecB64, { excludePath = '', logger } = {}) {
+  if (!vecB64) return null
+  const items = load(config)
+    .filter((f) => f.vec)
+    .filter((f) => String(f.path ?? '') !== String(excludePath ?? ''))
+    .map((f) => ({ id: faceKeyOf(f), vec: f.vec }))
+    .filter((x) => x.vec)
+  if (items.length === 0) return null
+  items.push({ id: '__candidate__', vec: vecB64 })
+  const scan = await scanInWorker(items, dedupeThresholdOf(config), { timeoutMs: 1500, logger })
+  const me = scan.flags.find((f) => f.id === '__candidate__')
+  if (!me?.dup || !me.dupOf) return null
+  return { id: me.dupOf, score: me.score }
+}
+
+/**
+ * 收藏全貌 + 查重标记（给设置页）。
+ *
+ * 标记**不落盘**：每次现扫。理由有两个 ——
+ *   ① 阈值是可调的，落盘的标记一改阈值就全对不上；
+ *   ② 换描述会重算向量，标记跟着变，存下来只会越来越脏。
+ * 扫的是「名字 + 标签」的向量，n=200 时也就几十毫秒，还在子线程里。
+ */
+export async function facesSnapshotWithDedupe(config, { logger } = {}) {
+  const snap = facesSnapshot(config)
+  const threshold = dedupeThresholdOf(config)
+  const items = load(config)
+    .filter((f) => f.vec)
+    .map((f) => ({ id: faceKeyOf(f), vec: f.vec }))
+  const scan =
+    items.length > 1
+      ? await scanInWorker(items, threshold, { logger })
+      : { flags: [], pairs: [], compared: 0, dupCount: 0, inline: true }
+  const byId = new Map((scan.flags ?? []).map((f) => [f.id, f]))
+  const list = snap.list.map((f) => {
+    const g = byId.get(f.id)
+    return { ...f, dup: Boolean(g?.dup), dupOf: g?.dupOf ?? '', dupScore: Number(g?.score) || 0 }
+  })
+  return {
+    ...snap,
+    list,
+    dedupe: {
+      enabled: dedupeAutoOn(config),
+      threshold,
+      dupCount: Number(scan.dupCount) || 0,
+      pairs: (scan.pairs ?? []).length,
+      compared: Number(scan.compared) || 0,
+      inline: Boolean(scan.inline),
+    },
+  }
+}
+
+/**
+ * 一键去重：每个"像"的簇里留最早入库的那条，删掉后来的。
+ * 图片条目连文件一起删。
+ *
+ * @returns {Promise<{ok:boolean, removed:number, total:number, error?:string}>}
+ */
+export async function dedupeFaces(config, { logger } = {}) {
+  const threshold = dedupeThresholdOf(config)
+  const list = load(config)
+  const items = list.filter((f) => f.vec).map((f) => ({ id: faceKeyOf(f), vec: f.vec }))
+  if (items.length < 2) return { ok: true, removed: 0, total: list.length }
+  const scan = await scanInWorker(items, threshold, { logger })
+  // 只删"跟着别人"的那些（dupOf 非空）；簇里的本体保留
+  const drop = new Set(
+    (scan.flags ?? []).filter((f) => f.dup && f.dupOf).map((f) => String(f.id)),
+  )
+  if (drop.size === 0) return { ok: true, removed: 0, total: list.length }
+
+  const keep = list.filter((f) => !drop.has(faceKeyOf(f)))
+  const saved = save(config, keep)
+  if (!saved) return { ok: false, removed: 0, total: list.length, error: '写盘失败' }
+  for (const f of list) {
+    if (!drop.has(faceKeyOf(f))) continue
+    if (f.kind !== 'image' || !f.path) continue
+    if (!isInsideFacesDir(config, f.path)) continue
+    try {
+      unlinkSync(f.path)
+    } catch {
+      /* 文件已经不在了也正常 */
+    }
+  }
+  return { ok: true, removed: drop.size, total: keep.length }
 }
 
 /**
@@ -502,7 +628,7 @@ export async function updateFace(config, id, { summary, tags } = {}, embed) {
   }
 
   const saved = save(config, list)
-  return { ok: saved, vec: vecOk, error: saved ? undefined : '写盘失败' }
+  return { ok: saved, vec: vecOk, ...(saved ? {} : { error: '写盘失败' }) }
 }
 
 /**

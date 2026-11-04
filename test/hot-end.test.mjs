@@ -115,4 +115,34 @@ function makeRhythm(extra = {}) {
   ok('私聊不走冷热窗，不会触发收尾')
 }
 
+/* ⑦ 消息恰好在边界上进来（gate 先到）也要通知 —— 2026-11-04 修的那条静默分支 */
+{
+  const rh = makeRhythm()
+  const calls = []
+  rh.setHotEndHandler((info) => calls.push(info))
+  const t = Date.now()
+  rh.gate({ scope: 'group', peerId: '5', label: '群 5', text: 'hi' })
+  // 热窗 10 秒；11 秒后先来一条消息 —— 以前这条 gate 会静悄悄切冷窗，收尾整个丢掉
+  rh.gate({ scope: 'group', peerId: '5', label: '群 5', text: '还在聊' }, t + 11_000)
+  assert.equal(calls.length, 1, `gate 到点也该通知，实际叫了 ${calls.length} 次`)
+  assert.equal(calls[0]?.peerId, '5')
+  ok('gate 撞上边界也不会吞掉收尾')
+}
+
+/* ⑧ 同一次转档只通知一次（gate 和 tick 都跑到也只算一次） */
+{
+  const rh = makeRhythm()
+  let calls = 0
+  rh.setHotEndHandler(() => {
+    calls += 1
+  })
+  const t = Date.now()
+  rh.gate({ scope: 'group', peerId: '6', text: 'hi' })
+  rh.gate({ scope: 'group', peerId: '6', text: 'hi' }, t + 11_000)
+  rh.tick(t + 11_000)
+  rh.tick(t + 12_000)
+  assert.equal(calls, 1, `应该只叫一次，实际 ${calls}`)
+  ok('同一次转档不会重复通知')
+}
+
 console.log('\n全部通过')

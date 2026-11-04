@@ -12,6 +12,7 @@
  *    否则保存时会被 sanitize 丢掉。下面有一道自检。
  */
 import { CURVES, BEHAVIORS, REQUEST_POLICIES, GROUP_OVERRIDABLE } from './group-settings.js'
+import { LONG_REPLY_CURVES } from './shared/long-reply.js'
 
 const S = 1000 // 秒 → 毫秒
 const M = 60_000 // 分 → 毫秒
@@ -68,6 +69,24 @@ export const GROUP_FIELDS = [
   { g: '烦躁度', key: 'ignoreRisePerMsg', label: '每条消息拉近多少', type: 'number', unit: '', min: 0.05, max: 1, step: 0.05, hint: '越大越敏感' },
   { g: '烦躁度', key: 'ignoreDecayTauMs', label: '没人说话时衰减', type: 'number', unit: '秒', scale: S, min: 10, max: 600, step: 5, hint: '多久掉到三分之一' },
   { g: '烦躁度', key: 'ignorePunishRise', label: '惩罚一次加多少', type: 'number', unit: '/100', min: 0, max: 100, step: 5 },
+
+  // 长文本回复惩罚（2026-11-04）：前面都在数「别人怎么吵」，这五项数的是自己说太长。
+  // 这一组下面接一张小图（rhythm.html 里画），选完参数能立刻看到「连着第几次会顶多少」。
+  { g: '烦躁度', key: 'longReplyPenalty', label: '连续长文本回复惩罚', type: 'boolean', hint: '说长话也算账：连着几次超字数就往上顶烦躁度' },
+  {
+    g: '烦躁度',
+    key: 'longReplyChars',
+    label: '长文本字数判定',
+    type: 'number',
+    unit: '字',
+    min: 20,
+    max: 5000,
+    step: 20,
+    hint: '去空白后超过这么多字算一次长文本；空格和换行不计',
+  },
+  { g: '烦躁度', key: 'longReplyBase', label: '基础连续长文本惩罚值', type: 'number', unit: '/100', min: 0, max: 60, step: 1, hint: '第 2 次起每一击的基础分' },
+  { g: '烦躁度', key: 'longReplyCurve', label: '惩罚方式', type: 'select', options: LONG_REPLY_CURVES, hint: '连续次数越多，每一次加得越多' },
+  { g: '烦躁度', key: 'longReplyGamma', label: '增长力度', type: 'number', unit: '', min: 1.05, max: 3, step: 0.05, hint: '只对幂函数 / 指数函数有效' },
 
   // ── 提示词（留空 = 用内置文案）──
   { g: '提示词', key: 'angerPromptYield', label: '愤怒时（幸福者退让）', type: 'textarea', hint: '留空用内置；{v} 会换成当前烦躁度' },

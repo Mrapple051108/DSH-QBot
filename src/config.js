@@ -303,6 +303,21 @@ export const ConfigSchema = Schema.object({
   faceEmbedTopK: Schema.number()
     .default(3)
     .description('语义匹配没中时，回几个候选名字给它挑'),
+  // ── 收藏查重（2026-11-04）──
+  // 「标签词向量太像」= 两句话说的是同一件事（同一张图换个描述、同一个梗的两张图）。
+  // 判断完全由插件在子线程里做，**不进工具返回值、不进提示词** —— 智能体不知道有这回事。
+  faceDedupeEnabled: Schema.boolean()
+    .default(false)
+    .description(
+      '往收藏里加图时，如果它跟已有的某张太像（余弦 ≥ 下面的阈值），直接丢弃不存。' +
+        '默认关 = 照存，只在收藏列表里打黄圈提示。关着更安全：宁可让人自己看一眼，也别偷偷丢图',
+    ),
+  faceDedupeThreshold: Schema.number()
+    .default(0.95)
+    .description(
+      '查重阈值（0.80~0.999）。比的是「名字 + 标签」那段文本的向量，不是图本身 —— ' +
+        '所以它抓的是"换个说法描述了同一件事"，不是"两张图画得一样"',
+    ),
   // 只读展示位：DSH 的全局设置页是 Schema 自动渲染的，没法插自定义 HTML，
   // 所以把「嵌入服务现在能不能用」做成一个字符串字段，每次打开设置页由插件现填。
   // 不在 OVERRIDABLE 里 —— POST 改不动它，改了也没用。
@@ -599,6 +614,37 @@ export const ConfigSchema = Schema.object({
   ignoreCooldownMs: Schema.number()
     .default(120000)
     .description('两次自动无视之间至少隔多久，单位毫秒（防抖）'),
+
+  // ── 长文本回复惩罚（2026-11-04 姐姐要的第五条烦躁度来源）──
+  // 前面那几项都在数「别人怎么吵」，这一组数的是**自己**：连着甩好几大段也费神。
+  // 判定放在回复真的发出去之后（rhythm.noteReply），不进会话历史、不打扰模型。
+  longReplyChars: Schema.number()
+    .default(400)
+    .description(
+      '【长文本字数判定】一次回复去空白后超过这么多字，就算一次「长文本」（默认 400）。' +
+        '空格和换行不算字数 —— 一段代码贴过来不等于说了那么多话',
+    ),
+  longReplyPenalty: Schema.boolean()
+    .default(true)
+    .description(
+      '【连续长文本回复惩罚】自己的回复太长也算账：连着好几次长回复会往上顶烦躁度。' +
+        '关掉就只记账不罚（面板上那个「连着几次」照样看得到）',
+    ),
+  longReplyBase: Schema.number()
+    .default(6)
+    .description(
+      '【基础连续长文本惩罚值】从第 2 次长回复起，每一击的基础分（惩罚方式在这个基础上增长）。' +
+        '第 1 次只记账不罚 —— 说一段长的很正常，连成串才是病因',
+    ),
+  longReplyCurve: Schema.union(['fixed', 'linear', 'power', 'exp'])
+    .default('linear')
+    .description(
+      '【惩罚方式】连续第 n 次长回复加多少：fixed 固定（每次都是基础值）/ ' +
+        'linear 线性（base×n）/ power 幂函数（base×n^力度）/ exp 指数（base×力度^(n-1)）',
+    ),
+  longReplyGamma: Schema.number()
+    .default(1.5)
+    .description('【增长力度】只对幂函数 / 指数函数有效（1.05 ~ 3）。1.5 时线性还是最温和的那条'),
 
   // ── 问题处理请求（2026-11-02 姐姐要的「别被白嫖」）──
   // 群里让人干活（画图 / 检索 / 算东西 / 写代码）是最烧 token 的一类消息：

@@ -91,6 +91,12 @@ const STOP_TOKENS = new Set([
 ])
 
 import { readThresholds, shapeScore } from './group-settings.js'
+import {
+  isLongReply,
+  longReplyCharsOf,
+  longReplyStep,
+  readLongReplyConfig,
+} from './shared/long-reply.js'
 
 function clamp(n, lo, hi) {
   return Math.min(hi, Math.max(lo, n))
@@ -249,9 +255,19 @@ function moodLine(ignite, levels = {}) {
   if (v < escape) {
     // 2026-11-03：原来这档到「该骂就骂」就收尾了，姐姐说骂得太干净、太温柔。
     // 人设里那句写得很清楚：「脏话是武器，不是情绪宣泄 —— 用它打人」。所以这里点名要求带脏字。
-    return `烦躁度 ${v}/100：很烦。该甩脸色就甩，该骂就骂——带脏字，别挑好听的说；别憋着，也别人家一哄你就软。`
+    // 2026-11-04：再加一条「烦的时候不接活」。愤怒状态下最烦的就是有人来要你干活，
+    //   姐姐的原话：「愤怒情绪下提示智能体拒绝复杂请求（幸福者退让就拒绝，必须回击就直接辱骂和嘲讽）」。
+    //   这块是**常态**（每轮动态段都有），不是只弹一次的事件提醒 —— 愤怒是个状态，不是一个瞬间。
+    return (
+      `烦躁度 ${v}/100：很烦。该甩脸色就甩，该骂就骂——带脏字，别挑好听的说；` +
+      '这时候有人来要你干活（查东西、写代码、算数、画图、长篇解释、整理资料）就直接推掉，别给替代方案；' +
+      '别憋着，也别人家一哄你就软。'
+    )
   }
-  return `烦躁度 ${v}/100：到上限 ${escape} 了，火压不住。开口就骂，脏话往狠里用，不解释、不哄人、不找台阶。`
+  return (
+    `烦躁度 ${v}/100：到上限 ${escape} 了，火压不住。开口就骂，脏话往狠里用，不解释、不哄人、不找台阶；` +
+    '谁再让你干活，连人带要求一起骂回去，一个字都别替他干。'
+  )
 }
 
 /**
@@ -382,10 +398,20 @@ function angerText({ label, ignite, cfg, calm, anger, escape }) {
     behavior === 'fight'
       ? '你现在是真火了。**照着骂回去**，可以带脏字，不用给人留面子，不用解释你为什么生气。'
       : '你现在很不舒服。**直接把不耐烦甩出来**，可以嫌、可以警告，但别讲道理、别解释。'
+  // 2026-11-04 姐姐要的：「愤怒情绪下提示智能体拒绝复杂请求（幸福者退让就拒绝，
+  // 必须回击就直接辱骂和嘲讽）」。两种脾气各给一条路，别让它一边发火一边又把活干了 ——
+  // 那才是最憋屈的状态，也最容易让它把火撒在无关的人身上。
+  const refuse =
+    behavior === 'fight'
+      ? '**这一轮别接活。** 有人来要你干活（查东西 / 写代码 / 算数 / 画图 / 长篇解释 / 整理资料）：' +
+        '不干，还要嘲 —— 怼他「自己不会弄？」「这也值得专门来问我，废物」，连要求带人一起损。'
+      : '**这一轮别接活。** 有人来要你干活（查东西 / 写代码 / 算数 / 画图 / 长篇解释 / 整理资料）：' +
+        '一句「不想弄 / 懒得弄 / 现在没空」推掉。不给替代方案，不解释理由，不哄。'
   return [
     head,
     '',
     temper,
+    refuse,
     '一句话就够，别总结、别道歉、别问"是不是有什么误会"——你很烦，就这么直说。',
     '',
     `想不出怎么说就照这个味道来（改个词，别原样抄）：${sample}`,
@@ -490,6 +516,12 @@ export function createRhythm({ config, manager, logger, ownerIds = [], buildImag
         angerFired: false,
         /** 最近一条消息算出来的原始得分（0~100，未平滑）—— 可视化上单独显示，用来看"这条到底顶了多少" */
         lastScore: 0,
+        /** 连续长回复计数（2026-11-04）：自己刚说的那句是连着第几次长文本 */
+        longStreak: 0,
+        /** 上一次长回复的时间，用来判「隔太久还算不算连着」 */
+        longAt: 0,
+        /** 累计因为长文本给烦躁度加了多少分（日志 / 面板用） */
+        longBumps: 0,
         lastIgniteAt: Date.now(),
         ring: [], // 最近 RING_MAX 条 {at, name, text, bag, atMe}
         atAt: [], // 最近 60 秒的 @ 时间戳
@@ -799,11 +831,12 @@ export function createRhythm({ config, manager, logger, ownerIds = [], buildImag
     }
 
     // ── ③ 热窗到点 → 转冷窗 ──
+    // ⚠️ 2026-11-04：这里以前是裸的 `enterCold()`，**不通知 inbound** ——
+    //    于是「消息恰好在边界上进来」由 gate 先到、`tick` 还没跑到的那一刻，
+    //    这一次收尾就整个丢了（姐姐报的「热窗换冷窗时没有发送消息」）。
+    //    现在两条路都走 finishHot，通知只发一次。
     if (st.phase === 'hot' && now >= st.untilAt) {
-      enterCold(st, now)
-      logger.debug?.(
-        `[dsh-qq] ${st.label} 热窗结束，进冷窗 ${Math.round(st.span / 60000)} 分钟`,
-      )
+      finishHot(key, st, now)
     }
 
     // ── ④ 冷窗：被 @ 就醒（主人也不例外，这不看 rhythmOwnerBypass）──
@@ -903,15 +936,87 @@ export function createRhythm({ config, manager, logger, ownerIds = [], buildImag
 
   /* ───────── 外部接口 ───────── */
 
-  /** 回复真的发出去了：重抽热窗（"每次回复后抽取热窗和冷窗"）。 */
-  function noteReply(record, now = Date.now()) {
+  /**
+   * 长文本回复记账（2026-11-04）。
+   *
+   * 烦躁度原来只由**别人说的话**驱动。姐姐要的是「连续多次回复长文本也去增加烦躁度」——
+   * 连着甩好几大段，本来就该越说越烦。这里在**回复真的发出去之后**记一笔：
+   *
+   *   ① 数一下这次算不算长文本（去掉空白后 ≥ longReplyChars）
+   *   ② 不算 → 连续计数清零（中间插一句短的，就断了）
+   *   ③ 算 → 计数 +1，按「惩罚方式」算这一击多少分，直接加进烦躁度
+   *
+   * 第 1 次只记账不罚：说一段长的很正常，连成串才是病因。
+   * 直接加而不是走 scoreOf 那条平滑 —— 一次长回复不该被 0.45 的系数吃掉八成，
+   * 跟「白嫖请求」的惩罚是同一个道理。
+   *
+   * @returns {number} 这一击加了多少分（0 = 没加）
+   */
+  function noteLongReply(st, text, now) {
+    const cfg = resolveConfig(st.peerId)
+    const opts = readLongReplyConfig(cfg)
+    if (!opts.enabled) {
+      st.longStreak = 0
+      return 0
+    }
+    const body = String(text ?? '')
+    if (!body.trim()) return 0
+    // 隔太久就别接着算了：「连续」指的是这一阵子连着说，不是隔半小时又算一次
+    const gapMs = Math.max(120_000, num(cfg?.ignoreDecayTauMs, 90_000) * 4)
+    if (st.longStreak > 0 && now - st.longAt > gapMs) st.longStreak = 0
+    if (!isLongReply(body, opts)) {
+      st.longStreak = 0
+      return 0
+    }
+    st.longStreak += 1
+    st.longAt = now
+    const step = longReplyStep(st.longStreak, opts)
+    if (step <= 0) return 0
+    st.ignite = clamp(st.ignite + step, 0, 100)
+    st.longBumps += step
+    // 掉回冷静阈值以下就重新武装愤怒档 —— 跟 bumpIgnite 一致
+    if (st.ignite < thrOf(cfg).calm) st.angerFired = false
+    sample(st, now, true)
+    logger.info?.(
+      `[dsh-qq] ${st.label} 连着第 ${st.longStreak} 次长回复（${longReplyCharsOf(body)} 字 ≥ ${opts.chars}），` +
+        `烦躁度 +${step} → ${Math.round(st.ignite)}（${opts.curve}）`,
+    )
+    return step
+  }
+
+  /**
+   * 回复真的发出去了：重抽热窗（"每次回复后抽取热窗和冷窗"）。
+   *
+   * @param {object} record 会话记录
+   * @param {number} [now]
+   * @param {string|{text?:string}} [said] 这一轮实际发出去的正文（长文本记账要用）。
+   *   省略 = 不记账 —— 老调用方（以及只关心热窗重抽的地方）照旧能用。
+   */
+  function noteReply(record, now = Date.now(), said = '') {
     if (!enabled()) {
       logger.debug?.(`[dsh-qq] noteReply 被跳过：节奏总开关关着`)
       return
     }
     if (groupsOnly() && record?.scope !== 'group') return
+    // 2026-11-04 姐姐观察到的：「告别会触发热窗，而且似乎会让它又进入计时周期」。
+    // 收尾那一轮（inbound.fireFarewell 挂了 `farewellTurn`）说完「我去忙了」，
+    // 整条链的语义是**收摊**，这时候再把热窗续上就自相矛盾：页面上一转身又变热窗，
+    // 下一条消息也照样按热窗里的节奏接。所以这一轮不记账、不重抽。
+    if (record?.farewellTurn) {
+      logger.debug?.(`[dsh-qq] ${record?.label ?? ''} 收尾轮说完，不重抽热窗（已经在收摊了）`)
+      return
+    }
     const st = stateOf(keyOf(record), record?.label)
     st.replies += 1
+    // 长文本记账（2026-11-04）：自己说太长也算费神，连着说更要命。
+    // 放在相位判断**之前** —— 无视里骂完那一句也照样该记账，只是它本来就短，
+    // 不可能是长文本，等于无副作用。
+    try {
+      const body = typeof said === 'string' ? said : String(said?.text ?? '')
+      if (body) noteLongReply(st, body, now)
+    } catch (err) {
+      logger.warn?.(`[dsh-qq] ${st.label} 长文本记账失败（不影响热窗）: ${err?.message ?? err}`)
+    }
     // 无视中不说话就不动它 —— 它自己都决定躲了，别被这条撑回热窗
     if (st.phase === 'ignore') {
       logger.debug?.(`[dsh-qq] ${st.label} 回复了，但正在无视冷窗里，不重抽热窗`)
@@ -927,6 +1032,28 @@ export function createRhythm({ config, manager, logger, ownerIds = [], buildImag
       `[dsh-qq] ${st.label} 回复 → 重抽热窗 ${Math.round(st.span / 1000)}s` +
         `（原相位 ${before}，到期 ${new Date(st.untilAt).toLocaleTimeString('zh-CN', { hour12: false })}）`,
     )
+  }
+
+  /**
+   * 说完告别就收摊：直接进冷窗。
+   *
+   * 2026-11-04 姐姐要的语义是「告别 = 这一段结束」。以前收尾轮会被 `noteReply`
+   * 当成一次普通回复 → 热窗重抽 → 面板上又变回热窗、计时重新开始，
+   * 看起来像"刚说完要走，又准备好了"。现在收尾轮不记账（见 noteReply），
+   * 这一句说完再由 inbound 显式切冷窗，两处合起来才不会自相矛盾。
+   */
+  function settleCold(record, now = Date.now()) {
+    if (!record) return false
+    if (groupsOnly() && record.scope !== 'group') return false
+    const st = states.get(keyOf(record))
+    if (!st) return false
+    if (st.phase === 'ignore') return false
+    const before = st.phase
+    enterCold(st, now)
+    logger.info?.(
+      `[dsh-qq] ${st.label} 收尾说完，${before === 'hot' ? '不留在热窗，' : ''}直接进冷窗 ${Math.round(st.span / 60000)} 分钟`,
+    )
+    return true
   }
 
   /** 模型主动进无视冷窗。返回实际生效的结束时间。 */
@@ -996,6 +1123,8 @@ export function createRhythm({ config, manager, logger, ownerIds = [], buildImag
       holds: st.holds,
       replies: st.replies,
       flushes: st.flushes,
+      // 连续长回复计数（2026-11-04）：连着第几次说长话，面板和日志要对得上
+      longStreak: st.longStreak,
       // 三阈值：可视化页要画三条线，页面上的数字也要跟它一致
       ...levels,
       angerFired: Boolean(st.angerFired),
@@ -1014,15 +1143,27 @@ export function createRhythm({ config, manager, logger, ownerIds = [], buildImag
    * 现在每轮投递都会问一句。**没到冷静阈值就返回空串** —— 平时不占 token，
    * 真烦了才提醒，不然每轮都念一遍"烦躁度 3/100：没什么"纯属噪音。
    *
-   * @returns {string} 形如 `烦躁度 62/100：很烦。该甩脸色就甩…`；不到阈值返回 ''
+   * 2026-11-04 补了一条：连着好几次说长话时，这里多带一行「你已经连着 3 次说了一大段」。
+   * 那种情况下烦躁度可能还没过冷静阈值，但它自己确实需要知道 —— 所以这一行
+   * 不受阈值管，只要 longStreak ≥ 2 就出现。
+   *
+   * @returns {string} 形如 `烦躁度 62/100：很烦。该甩脸色就甩…`；没什么可说时返回 ''
    */
   function moodText(scope, peerId) {
     const st = states.get(`${scope}:${peerId}`)
     if (!st) return ''
-    const levels = thrOf(cfgOf(st))
+    const cfg = cfgOf(st)
+    const levels = thrOf(cfg)
     const v = Math.round(st.ignite) || 0
-    if (v < levels.calm) return ''
-    return moodLine(v, levels)
+    const mood = v < levels.calm ? '' : moodLine(v, levels)
+    let longHint = ''
+    if (st.longStreak >= 2) {
+      const opts = readLongReplyConfig(cfg)
+      longHint =
+        `另外：你已经连着 ${st.longStreak} 次说了一大段（一次超过 ${opts.chars} 字就算长），` +
+        '这一轮能短就短，别又铺开一大片。'
+    }
+    return [mood, longHint].filter(Boolean).join('\n')
   }
 
   /**
@@ -1097,13 +1238,17 @@ export function createRhythm({ config, manager, logger, ownerIds = [], buildImag
    * 永远出自同一个公式 —— 两边各算一遍，迟早分叉（姐姐已经在别的地方踩过了）。
    */
   function mergeWindowOf(scope, peerId) {
-    const min = Math.max(0, num(config?.groupMergeWindowMs, 2500))
+    // 2026-11-04：改成读**这个群自己的**配置。以前写的是模块级的 `config`，
+    // 于是群设置页里那两栏「接话节奏」改了对等待时长毫无影响 ——
+    // 页面上的数字变了、行为没变，正是那种"看着在动、其实没接上"的坑。
+    const cfg = resolveConfig(peerId)
+    const min = Math.max(0, num(cfg?.groupMergeWindowMs, 2500))
     // 明确关掉（0）就是关掉，别因为烦躁度高又给开回来
     if (min <= 0) return 0
-    if (!enabled()) return Math.round(min)
-    const max = Math.max(min, num(config?.groupMergeWindowMaxMs, 15_000))
+    if (!enabled(cfg)) return Math.round(min)
+    const max = Math.max(min, num(cfg?.groupMergeWindowMaxMs, 15_000))
     // 按逃离阈值归一：烦躁度顶到"要走人"的程度，就该等满上限
-    const thr = Math.max(1, thrOf(config).escape)
+    const thr = Math.max(1, thrOf(cfg).escape)
     const ig = igniteOf(scope, peerId)
     const t = Math.min(1, Math.max(0, ig / thr))
     return Math.round(min + (max - min) * t)
@@ -1149,6 +1294,36 @@ export function createRhythm({ config, manager, logger, ownerIds = [], buildImag
     onHotEnd = typeof fn === 'function' ? fn : null
   }
 
+  /**
+   * 热窗 → 冷窗，**唯一的一个口子**。
+   *
+   * 2026-11-04 之前有两条路能关掉热窗：
+   *   · `tick()` 到点 —— 会通知 inbound（2026-11-02 加的）
+   *   · `gate()` 里那条兜底 —— 静悄悄 `enterCold()`，不通知
+   * 谁先到算谁。消息恰好在边界上进来时是 gate 先到，收尾就整个丢了。
+   * 现在两条路都走这儿：先切相位（这样下面投出去的话不会被当成热窗活动），
+   * 再喊一声，喊的时候 st.phase 已经是 cold。
+   */
+  function finishHot(key, st, now = Date.now()) {
+    const label = st.label
+    const span = st.span
+    enterCold(st, now)
+    logger.debug?.(
+      `[dsh-qq] ${label || key} 热窗结束（原定 ${Math.round(span / 1000)}s），进冷窗 ${Math.round(st.span / 60000)} 分钟`,
+    )
+    // 没交出去的东西由 inbound 从 backlog / pending / history 里捞，这里只负责喊一声。
+    try {
+      const at = String(key).indexOf(':')
+      onHotEnd?.({
+        scope: at > 0 ? String(key).slice(0, at) : 'group',
+        peerId: at > 0 ? String(key).slice(at + 1) : String(key),
+        label,
+      })
+    } catch (err) {
+      logger.warn?.(`[dsh-qq] 热窗收尾回调失败 ${key}: ${err?.message ?? err}`)
+    }
+  }
+
   function tick(now = Date.now()) {
     if (stopped) return
     for (const [key, st] of states) {
@@ -1157,20 +1332,7 @@ export function createRhythm({ config, manager, logger, ownerIds = [], buildImag
         // 15 秒一个点：这是曲线的主要来源，相位切换那几下另外 force 落点
         sample(st, now)
         if (st.phase === 'hot' && now >= st.untilAt) {
-          const label = st.label
-          enterCold(st, now)
-          // 切完了再通知：这时 st.phase 已经是 cold，投递出去的话不会被当成热窗活动。
-          // 没交出去的东西由 inbound 从 backlog / history 里捞，这里只负责喊一声。
-          try {
-            const at = String(key).indexOf(':')
-            onHotEnd?.({
-              scope: at > 0 ? String(key).slice(0, at) : 'group',
-              peerId: at > 0 ? String(key).slice(at + 1) : String(key),
-              label,
-            })
-          } catch (err) {
-            logger.warn?.(`[dsh-qq] 热窗收尾回调失败 ${key}: ${err?.message ?? err}`)
-          }
+          finishHot(key, st, now)
           continue
         }
         if (st.phase === 'cold' && now >= st.untilAt) {
@@ -1250,6 +1412,7 @@ export function createRhythm({ config, manager, logger, ownerIds = [], buildImag
     tick,
     gate,
     noteReply,
+    settleCold,
     forceIgnore,
     releaseIgnore,
     snapshot,

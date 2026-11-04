@@ -14,6 +14,7 @@
 				--acc: #5b9dff;
 				--acc2: #7ee0c0;
 				--warn: #ff7b72;
+				--dup: #e8b53a;
 			}
 			* { box-sizing: border-box; }
 			body {
@@ -112,6 +113,13 @@
 			.bad { color: var(--warn); }
 			.set-foot { margin-top: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
+			/* 长文本惩罚的小图（2026-11-04）：设置在上面，图跟着输入框实时重算 */
+			.lr-box { margin-top: 10px; border: 1px dashed #24303f; border-radius: 9px; padding: 8px 10px 4px; background: #0f141b; }
+			.lr-head { font-size: 12px; color: var(--dim); display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+			.lr-head b { color: var(--acc2); font-weight: 600; }
+			#lr-chart { width: 100%; height: auto; display: block; margin-top: 4px; }
+			.lr-foot { font-size: 11px; color: #6b7787; margin: 2px 0 2px; line-height: 1.6; }
+
 			/* 表情包收藏（2026-11-03）：四列网格，点开看大图 + 改描述 */
 			.face-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 			.face-tile { position: relative; aspect-ratio: 1 / 1; border: 1px solid var(--line); border-radius: 10px; background: #0f141b; overflow: hidden; display: flex; align-items: center; justify-content: center; cursor: zoom-in; font-size: 11px; color: var(--dim); text-align: center; line-height: 1.3; }
@@ -119,6 +127,14 @@
 			.face-tile:hover { border-color: var(--acc2); }
 			.face-badge { position: absolute; bottom: 4px; left: 4px; font-size: 10px; padding: 1px 5px; border-radius: 5px; background: rgba(0, 0, 0, 0.62); color: var(--dim); font-style: normal; }
 			.face-badge.miss { left: auto; right: 4px; color: var(--warn); }
+			/* 查重：右上角黄圈感叹号（2026-11-04） */
+			.face-tile .dup-ring { position: absolute; top: 5px; right: 5px; width: 18px; height: 18px; border-radius: 50%;
+				border: 1.5px dashed var(--dup); color: var(--dup); background: rgba(0, 0, 0, 0.55);
+				font-size: 11px; font-weight: 700; line-height: 16px; text-align: center; font-style: normal; }
+			.face-tools { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 0 0 10px; font-size: 12px; color: var(--dim); }
+			.face-tools label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+			.face-tools input[type="number"] { width: 74px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--line); background: #0f141b; color: var(--fg); font-size: 12px; }
+			.face-tools .dup-count { color: var(--dup); }
 			.face-meta { font-size: 11px; color: var(--dim); }
 
 			#face-modal { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.62); display: flex; align-items: center; justify-content: center; z-index: 50; }
@@ -162,7 +178,7 @@
 			</div>
 			<div class="tip">
 				上面的卡片是<b>实时状态</b>：当前哪一档、本档抽到的时长（跟设置里的区间一起看）、还有多久换档、烦躁度多少。<br />
-				倒计时每秒走，数据 5 秒刷一次；「攒着」是冷窗里压着没投的消息数，切到热窗会一次性交出去。<br />
+				倒计时每秒走，数据 5 秒刷一次；「攒着」是冷窗里压着没投的消息数，切到热窗会一次性交出去。「对话窗口」是 @ 之后那段免 @ 期，到点变「已到点」；曲线上窗口外的部分画成虚线 —— 那几段它没有开口的资格，起伏只是群里有人在说话。<br />
 				<br />
 				烦躁度<b>一直在算</b>，跟「按烦躁度自动开无视」那个开关无关 —— 关掉只是不会自己进无视，曲线照记。<br />
 				曲线每 15 秒落一个点，状态切换时额外补一个；内存里保留最近约 12 小时，宿主重启会清空。<br />
@@ -213,8 +229,15 @@
 						<span class="muted">
 							所有群和私聊共用这一份 —— 表情包没有按群的概念。<br />
 							改描述会重算它的语义向量，下次按意思挑图就照新描述找；描述空着的图，语义检索挑不到。<br />
-							删除会连本地图片一起删掉；商城表情只删这份登记，不影响 QQ 里的表情。
+							删除会连本地图片一起删掉。<b>右上角黄圈的</b>是「跟库里某张的描述太像、可能是重复」——
+							只是提示，插件不会自己去删；嫌它烦就点「一键去重」。
 						</span>
+					</div>
+					<div class="face-tools" id="face-tools">
+						<button id="faces-dedupe">一键去重</button>
+						<label><input type="checkbox" id="faces-auto" /> 添加时自动丢弃重复</label>
+						<label>阈值 <input type="number" id="faces-thr" min="0.8" max="0.999" step="0.005" /></label>
+						<span id="faces-dup" class="muted"></span>
 					</div>
 					<div id="faces-body" class="set-body"><div class="muted">加载中…</div></div>
 					<div class="set-foot">
@@ -347,6 +370,23 @@
 							? fmtMs(wMin) + " → " + fmtMs(wMax) + "，烦躁度越高等越久（新消息会重新计时）"
 							: "已关闭（来一条回一条）";
 					var nearCap = ign >= thr * 0.85;
+					// 对话窗口（2026-11-04 姐姐要的）：@ 之后那段免 @ 期。
+					// 到点以后这张卡从倒计时变成「已到点」，曲线上那几段也开始画虚线。
+					var wakeUntil = Number(s.wakeUntil) || 0;
+					var wakeRemain = Math.max(0, wakeUntil - Date.now());
+					var wakeLive = Boolean(s.wakeLive) && wakeRemain > 0;
+					var wakeCard =
+						'<div class="st' +
+						(wakeLive ? " hot" : "") +
+						'"><div class="k">对话窗口（@ 之后）</div><div class="v">' +
+						(s.mustAt === false ? "不用 @" : wakeLive ? fmtCd(wakeRemain) : "已到点") +
+						'</div><div class="s">' +
+						(s.mustAt === false
+							? "这个群不用 @ 也接话，窗口对它没意义"
+							: wakeLive
+								? "到点会先回掉攒的话，再说一句收尾"
+								: "必须 @ 才接话 · 窗口外那几段曲线是虚线") +
+						"</div></div>";
 					// 情绪档位：后端 /api/dsh-qq/rhythm 已经算好（moodOf），这里只负责兜底和上色
 					var mood = s.mood || null;
 					var moodKey =
@@ -406,6 +446,7 @@
 						'%"></i></div><div class="s">' +
 						next +
 						"</div></div>" +
+						wakeCard +
 						'<div class="st"><div class="k">攒着 / 丢弃</div><div class="v">' +
 						(s.holdCount || 0) +
 						" 条</div><div class=\"s\">丢过 " +
@@ -587,10 +628,23 @@
 					}
 					// 折线：按值分段染色 —— 高过「进入阈值」就是会触发的那一段，画红；
 					// 其余画绿。一整条 path 只能一种颜色，所以拆成逐段 line 拼。
+					//
+					// 2026-11-04 姐姐要的：**不在对话窗口里的时段画成虚线**。
+					// 那几段它其实没有开口的资格（必须 @ 的群、又没人 @ 它），
+					// 曲线上的起伏只是"群里有人在说话"，不是它在接话 —— 实线会看错。
+					var wakeRanges = Array.isArray(s.wakeRanges) ? s.wakeRanges : [];
+					function inWake(t) {
+						for (var q = 0; q < wakeRanges.length; q++) {
+							if (t >= wakeRanges[q][0] && t <= wakeRanges[q][1]) return true;
+						}
+						return false;
+					}
+					var useDash = Boolean(s.mustAt) && wakeRanges.length > 0;
 					for (var n2 = 1; n2 < pts.length; n2++) {
 						var pa = pts[n2 - 1];
 						var pb = pts[n2];
 						var col = (pa.v + pb.v) / 2 >= thr ? "#ff7b72" : "#7ee0c0";
+						var dashed = useDash && !inWake(pa.t);
 						out +=
 							'<line x1="' +
 							X(pa.t).toFixed(1) +
@@ -602,7 +656,50 @@
 							Y(pb.v).toFixed(1) +
 							'" stroke="' +
 							col +
-							'" stroke-width="1.7" stroke-linecap="round"/>';
+							'" stroke-width="1.7" stroke-linecap="round"' +
+							(dashed ? ' stroke-dasharray="3 3" stroke-opacity="0.5"' : "") +
+							"/>";
+					}
+					// 窗口开 / 关的竖线：一眼看出"哪一段它在待命"
+					if (useDash) {
+						for (var wr = 0; wr < wakeRanges.length; wr++) {
+							var r0 = wakeRanges[wr][0];
+							var r1 = wakeRanges[wr][1];
+							if (r0 >= t0 && r0 <= t1) {
+								out +=
+									'<line x1="' +
+									X(r0).toFixed(1) +
+									'" y1="' +
+									PT +
+									'" x2="' +
+									X(r0).toFixed(1) +
+									'" y2="' +
+									(H - PB) +
+									'" stroke="#7ee0c0" stroke-width="1" stroke-opacity="0.45" stroke-dasharray="2 4"/>' +
+									'<text x="' +
+									(X(r0) + 3).toFixed(1) +
+									'" y="' +
+									(PT + 11) +
+									'" fill="#7ee0c0" fill-opacity="0.75" font-size="10">窗口开</text>';
+							}
+							if (r1 > r0 && r1 >= t0 && r1 <= t1) {
+								out +=
+									'<line x1="' +
+									X(r1).toFixed(1) +
+									'" y1="' +
+									PT +
+									'" x2="' +
+									X(r1).toFixed(1) +
+									'" y2="' +
+									(H - PB) +
+									'" stroke="#8b98a9" stroke-width="1" stroke-opacity="0.5" stroke-dasharray="2 4"/>' +
+									'<text x="' +
+									(X(r1) + 3).toFixed(1) +
+									'" y="' +
+									(PT + 11) +
+									'" fill="#8b98a9" fill-opacity="0.8" font-size="10">到点</text>';
+							}
+						}
 					}
 					// 采样点（最多画 240 个，免得几千个圆点糊成一团）
 					var step = Math.max(1, Math.floor(pts.length / 240));
@@ -807,20 +904,181 @@
 					);
 				}
 
+				/* ───────── 长文本惩罚的小图（2026-11-04） ─────────
+				 * 姐姐要的：「跟一个小图表可视化一下所选配置不同次数连续长回答会增加的烦躁度」。
+				 * 图跟着上面那几个输入框实时重算（不用先保存），所以公式在页面里也有一份。
+				 */
+
+				var LR_MAX_N = 8;
+				var LR_CURVE_LABEL = {
+					fixed: "固定惩罚",
+					linear: "线性增长",
+					power: "幂函数增长",
+					exp: "指数函数增长",
+				};
+
+				function longReplyChartHtml() {
+					return (
+						'<div class="lr-box" id="lr-box">' +
+						'<div class="lr-head"><b>连续长回复会多顶多少烦躁度</b><span class="muted" id="lr-note"></span></div>' +
+						'<svg id="lr-chart" viewBox="0 0 680 240" preserveAspectRatio="xMidYMid meet"></svg>' +
+						'<div class="lr-foot">第 1 次只记账，从第 2 次起才开始加；中间插一句短的（不到判定字数）就重新计数。' +
+						"柱高是累计值，柱顶的 +N 是那一次加了多少。</div>" +
+						"</div>"
+					);
+				}
+
+				/** 面板上「现在生效的值」：输入框优先（含还没保存的改动），退回字段值 / 全局值。 */
+				function liveValue(key, dflt) {
+					var el = document.getElementById("f_" + key);
+					if (el && el.value !== "" && el.value != null) {
+						var n = Number(el.value);
+						if (isFinite(n)) return n;
+					}
+					var f = findField(key);
+					if (f) {
+						var a = Number(f.value);
+						if (isFinite(a)) return a;
+						var b = Number(f.global);
+						if (isFinite(b)) return b;
+					}
+					return dflt;
+				}
+
+				function liveBool(key, dflt) {
+					var el = document.getElementById("f_" + key);
+					if (el && el.type === "checkbox") return el.checked === true;
+					var f = findField(key);
+					if (f && typeof f.value === "boolean") return f.value;
+					return dflt;
+				}
+
+				/**
+				 * 惩罚公式。**跟 src/shared/long-reply.js 的 longReplyStep 是同一份** ——
+				 * 页面要跟着输入框实时重算，拿不到后端模块，只能抄一遍。
+				 * 改公式务必两边一起改（后端那边有测试盯着）。
+				 */
+				function lrStep(n, base, curve, gamma) {
+					if (n <= 1) return 0;
+					if (!(base > 0)) return 0;
+					var v = base;
+					if (curve === "linear") v = base * n;
+					else if (curve === "power") v = base * Math.pow(n, gamma);
+					else if (curve === "exp") v = base * Math.pow(gamma, n - 1);
+					return Math.round(Math.min(100, Math.max(0, v)) * 10) / 10;
+				}
+
+				function drawLongReplyChart() {
+					var svg = document.getElementById("lr-chart");
+					if (!svg) return;
+					var on = liveBool("longReplyPenalty", true);
+					var chars = Math.max(20, Math.round(liveValue("longReplyChars", 400)));
+					var base = Math.max(0, liveValue("longReplyBase", 6));
+					var curveEl = document.getElementById("f_longReplyCurve");
+					var curve = curveEl ? String(curveEl.value || "linear") : "linear";
+					var gamma = Math.min(3, Math.max(1.05, liveValue("longReplyGamma", 1.5)));
+					var anger = liveValue("ignoreAngerThreshold", 50);
+					var escape = liveValue("ignoreEscapeThreshold", 70);
+
+					var W = 680, H = 240, L = 42, R = 18, T = 20, B = 42;
+					var iw = W - L - R;
+					var ih = H - T - B;
+					var slot = iw / LR_MAX_N;
+					var bw = Math.min(30, slot * 0.46);
+					var yOf = function (v) {
+						return T + ih - (Math.min(100, Math.max(0, v)) / 100) * ih;
+					};
+					var out = [];
+					var g, y, n;
+					for (g = 0; g <= 100; g += 25) {
+						y = yOf(g);
+						out.push('<line x1="' + L + '" y1="' + y + '" x2="' + (W - R) + '" y2="' + y + '" stroke="#1c2531" stroke-width="1" />');
+						out.push('<text x="' + (L - 6) + '" y="' + (y + 4) + '" fill="#6b7787" font-size="10" text-anchor="end">' + g + "</text>");
+					}
+					[
+						[anger, "#e8b53a", "愤怒 " + Math.round(anger)],
+						[escape, "#ff7b72", "逃离 " + Math.round(escape)],
+					].forEach(function (it) {
+						var yy = yOf(it[0]);
+						out.push('<line x1="' + L + '" y1="' + yy + '" x2="' + (W - R) + '" y2="' + yy + '" stroke="' + it[1] + '" stroke-width="1" stroke-dasharray="4 4" opacity="' + (on ? 0.55 : 0.22) + '" />');
+						// 标签放到左侧靠里：右侧那一片正好是柱子最高的地方，压上去看不清
+						out.push('<text x="' + (L + 4) + '" y="' + (yy - 4) + '" fill="' + it[1] + '" font-size="10" text-anchor="start" opacity="' + (on ? 0.9 : 0.35) + '" paint-order="stroke" stroke="#0b0f15" stroke-width="3">' + esc(it[2]) + "</text>");
+					});
+					var total = 0;
+					var pts = [];
+					for (n = 1; n <= LR_MAX_N; n += 1) {
+						var step = on ? lrStep(n, base, curve, gamma) : 0;
+						total = Math.min(100, Math.round((total + step) * 10) / 10);
+						var cx = L + slot * (n - 0.5);
+						var h = (total / 100) * ih;
+						var col = total >= escape ? "#ff7b72" : total >= anger ? "#e8b53a" : "#5b9dff";
+						if (h > 0.5) {
+							out.push(
+								'<rect x="' + (cx - bw / 2) + '" y="' + (T + ih - h) + '" width="' + bw + '" height="' + h +
+									'" rx="3" fill="' + col + '" fill-opacity="' + (on ? 0.85 : 0.22) + '">' +
+									"<title>第 " + n + " 次：+" + step + " → 累计 " + total + "/100</title></rect>",
+							);
+						}
+						if (step > 0) {
+							// paint-order + 描边：柱顶的数字经常压在累计折线上，不加这层会糊在一起
+							out.push('<text x="' + cx + '" y="' + (T + ih - h - 5) + '" fill="' + col + '" font-size="10" text-anchor="middle" paint-order="stroke" stroke="#0b0f15" stroke-width="3">+' + step + "</text>");
+						}
+						out.push('<text x="' + cx + '" y="' + (T + ih + 14) + '" fill="#8b98a9" font-size="10" text-anchor="middle">' + n + "</text>");
+						pts.push(cx + "," + yOf(total));
+					}
+					out.push('<polyline fill="none" stroke="#7ee0c0" stroke-width="1.5" opacity="' + (on ? 0.85 : 0.22) + '" points="' + pts.join(" ") + '" />');
+					out.push('<text x="' + L + '" y="' + (H - 6) + '" fill="#6b7787" font-size="10">连着第几次长回复 →</text>');
+					if (!on) {
+						out.push('<text x="' + (L + iw / 2) + '" y="' + (T + ih / 2) + '" fill="#ff7b72" font-size="12" text-anchor="middle">惩罚关着：只记账，不加分</text>');
+					}
+					svg.innerHTML = out.join("");
+
+					var note = document.getElementById("lr-note");
+					if (note) {
+						note.textContent = on
+							? "超 " + chars + " 字算一次 · " + (LR_CURVE_LABEL[curve] || curve) + " · 基础 " + base +
+								(curve === "power" || curve === "exp" ? " · 力度 " + gamma : "")
+							: "已关闭";
+					}
+				}
+
+				function bindLongReplyChart() {
+					[
+						"longReplyPenalty",
+						"longReplyChars",
+						"longReplyBase",
+						"longReplyCurve",
+						"longReplyGamma",
+						"ignoreAngerThreshold",
+						"ignoreEscapeThreshold",
+					].forEach(function (k) {
+						var el = document.getElementById("f_" + k);
+						if (!el) return;
+						el.addEventListener("input", drawLongReplyChart);
+						el.addEventListener("change", drawLongReplyChart);
+					});
+				}
+
 				function renderSettings(data) {
 					SET = data;
 					var box = document.getElementById("set-body");
 					if (!box) return;
 					box.innerHTML = (data.sections || [])
 						.map(function (sec) {
+							// 「烦躁度」这一组末尾挂一张小图（2026-11-04）：长文本惩罚那几个数
+							// 光看数字没有手感，画出来才知道「连着第几次会顶到愤怒档」。
+							var extra = sec.name === "烦躁度" ? longReplyChartHtml() : "";
 							return (
 								'<div class="sec"><div class="sec-name">' + esc(sec.name) + "</div>" +
 								sec.fields.map(rowHtml).join("") +
+								extra +
 								"</div>"
 							);
 						})
 						.join("");
 					bindSettings();
+					bindLongReplyChart();
+					drawLongReplyChart();
 				}
 
 				function findField(key) {
@@ -932,6 +1190,47 @@
 				document.getElementById("faces-file").addEventListener("change", function (e) {
 					uploadFaces(e.target.files);
 					e.target.value = "";
+				});
+				// 查重三件套（2026-11-04）：开关 / 阈值走设置接口，一键去重走 faces 接口。
+				// 这三样都是"插件自己的家务事"—— 智能体那边一个字都看不到。
+				async function saveDedupeConfig(patch) {
+					var msg = document.getElementById("faces-msg");
+					try {
+						var r = await fetch("/api/dsh-qq/settings", {
+							method: "POST",
+							credentials: "same-origin",
+							headers: { "content-type": "application/json" },
+							body: JSON.stringify({ patch: patch }),
+						});
+						var j = await r.json();
+						if (!j || !j.ok) throw new Error((j && j.error) || "保存失败");
+						if (msg) msg.textContent = "已保存，下次加图就按这个来";
+						loadFaces();
+					} catch (e) {
+						if (msg) msg.textContent = "保存失败：" + e.message;
+					}
+				}
+				document.getElementById("faces-auto").addEventListener("change", function (e) {
+					saveDedupeConfig({ faceDedupeEnabled: e.target.checked === true });
+				});
+				document.getElementById("faces-thr").addEventListener("change", function (e) {
+					var v = Number(e.target.value);
+					if (!isFinite(v) || v <= 0) return;
+					v = Math.min(0.999, Math.max(0.8, v));
+					e.target.value = v;
+					saveDedupeConfig({ faceDedupeThreshold: v });
+				});
+				document.getElementById("faces-dedupe").addEventListener("click", async function () {
+					var msg = document.getElementById("faces-msg");
+					if (!confirm("每个「像」的簇里留最早那张，删掉后来的（连本地图片一起删）。继续？")) return;
+					try {
+						var j = await facePost({ action: "dedupe" });
+						if (!j || !j.ok) throw new Error((j && j.error) || "去重失败");
+						if (msg) msg.textContent = "删掉 " + (j.removed || 0) + " 条，现在 " + (j.total || 0) + " 条";
+						loadFaces();
+					} catch (e) {
+						if (msg) msg.textContent = "去重失败：" + e.message;
+					}
 				});
 				document.getElementById("faces-body").addEventListener("click", function (e) {
 					var tile = e.target && e.target.closest ? e.target.closest(".face-tile") : null;
@@ -1265,6 +1564,29 @@
 					var box = document.getElementById("faces-body");
 					if (!box) return;
 					FACES = (j && j.list) || [];
+					// 2026-11-04：查重的三件套（开关 / 阈值 / 一键去重）+ 黄圈数量
+					var dz = (j && j.dedupe) || {};
+					var auto = document.getElementById("faces-auto");
+					var thr = document.getElementById("faces-thr");
+					var dup = document.getElementById("faces-dup");
+					var btn = document.getElementById("faces-dedupe");
+					if (auto) auto.checked = dz.enabled === true;
+					if (thr) {
+						thr.value = Number(dz.threshold) || 0.95;
+						thr.title = "余弦 ≥ 这个值就算「太像」。比的是「名字 + 标签」的向量，不是图本身";
+					}
+					if (dup) {
+						dup.textContent = dz.dupCount
+							? "❗ " + dz.dupCount + " 张看着像重复"
+							: "没扫到重复";
+						dup.className = dz.dupCount ? "dup-count" : "muted";
+					}
+					if (btn) {
+						btn.disabled = !dz.dupCount;
+						btn.title = dz.dupCount
+							? "每个「像」的簇里留最早那张，删掉后来的（连本地图片一起删）"
+							: "没有重复可去";
+					}
 					if (FACES.length === 0) {
 						box.innerHTML =
 							'<div class="muted">还没有收藏。看到她喜欢的那张，让她用 <code>qq_keep_face</code> 收；' +
@@ -1280,6 +1602,17 @@
 							var badges = "";
 							if (!f.hasVec) badges += '<i class="face-badge">无向量</i>';
 							if (f.missing) badges += '<i class="face-badge miss">文件丢</i>';
+							// 黄圈：这张跟库里某张太像了（插件自己判的，智能体不知道）
+							var score = Number(f.dupScore) || 0;
+							var ring = f.dup
+								? '<i class="dup-ring" title="' +
+									esc(
+										(f.dupOf ? "跟「" + nameOf(f.dupOf) + "」太像" : "跟库里另一张太像") +
+											(score > 0 ? "（相似度 " + score.toFixed(3) + "）" : "") +
+											"，可能是重复的",
+									) +
+									'">!</i>'
+								: "";
 							return (
 								'<div class="face-tile" data-id="' +
 								esc(f.id) +
@@ -1287,6 +1620,7 @@
 								esc(f.summary || "（还没写描述）") +
 								'">' +
 								thumb +
+								ring +
 								badges +
 								"</div>"
 							);
@@ -1297,8 +1631,17 @@
 						" 张，带向量 " +
 						esc(String(j.withVec)) +
 						" 张 · 点任意一张看大图、改描述" +
+						(dz.compared ? " · 这次比了 " + esc(String(dz.compared)) + " 对" : "") +
 						(j.dir ? " · 目录 " + esc(j.dir) : "") +
 						"</div>";
+				}
+
+				/** 按 id 找描述，给黄圈的提示用。 */
+				function nameOf(id) {
+					for (var i = 0; i < FACES.length; i++) {
+						if (FACES[i].id === id) return String(FACES[i].summary || "无描述的那张");
+					}
+					return "库里另一张";
 				}
 
 				function openFaceDetail(id) {
@@ -1389,8 +1732,7 @@
 				}
 
 
-				async function uploadFaces(files) {
-					var msg = document.getElementById("faces-msg");
+				async function uploadFaces(files) {					var msg = document.getElementById("faces-msg");
 					if (!files || files.length === 0) return;
 					var ok = 0;
 					var bad = [];

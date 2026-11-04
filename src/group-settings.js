@@ -46,6 +46,12 @@ export const GROUP_OVERRIDABLE = [
   'ignoreRisePerMsg',
   'ignoreDecayTauMs',
   'ignorePunishRise',
+  // 长文本回复惩罚（2026-11-04）
+  'longReplyPenalty',
+  'longReplyChars',
+  'longReplyBase',
+  'longReplyCurve',
+  'longReplyGamma',
   'ignoreAuto',
   'ignoreNag',
   // 四段提示词模板（空 = 用内置）
